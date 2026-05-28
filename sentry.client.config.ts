@@ -14,7 +14,7 @@ Sentry.init({
     // Sentry breadcrumbs live at event.breadcrumbs.values (the array).
     // The old loop silently did nothing — fragment URLs were never scrubbed.
     if (event.breadcrumbs?.values) {
-      for (const crumb of event.breadcrumbs.values) {
+      for (const crumb of event.breadcrumbs.values()) {
         if (crumb.data?.url) {
           crumb.data.url = crumb.data.url.split('#').at(0) ?? '';
         }
@@ -24,3 +24,4 @@ Sentry.init({
     return event;
   },
 });
+
