@@ -1,0 +1,6 @@
+User-agent: *
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+Sitemap: https://scorchpad.rsaatlabs.com/sitemap.xml

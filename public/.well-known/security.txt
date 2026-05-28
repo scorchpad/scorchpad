@@ -1,0 +1,6 @@
+Contact: security@scorchpad.rsaatlabs.com
+Expires: 2027-05-28
+Encryption: https://scorchpad.rsaatlabs.com/pgp-key.txt
+Preferred-Languages: en
+Policy: https://scorchpad.rsaatlabs.com/security
+Canonical: https://scorchpad.rsaatlabs.com/.well-known/security.txt
