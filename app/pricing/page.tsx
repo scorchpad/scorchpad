@@ -1,94 +1,26 @@
 'use client';
 import { PricingCard } from '../../src/components/pricing/PricingCard';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Check, X, Shield, Zap, Eye, Lock, Flame } from 'lucide-react';
 
-// ─── Comparison table data ────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// FEATURE FLAG: set to true once Lemon Squeezy is approved and live
+// ─────────────────────────────────────────────────────────────────────────────
+const INTERNATIONAL_PAYMENTS_ENABLED = false;
+
 const COMPARISON = [
-  {
-    feature: 'Zero-knowledge encryption',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: true,
-    onetimesecret: false,
-  },
-  {
-    feature: 'AES-256-GCM + PBKDF2 (310k iterations)',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: 'partial',
-    onetimesecret: false,
-  },
-  {
-    feature: 'Key never touches the server',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: true,
-    onetimesecret: false,
-  },
-  {
-    feature: 'URL fragment key erasure after decrypt',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: false,
-    onetimesecret: false,
-  },
-  {
-    feature: 'Clipboard auto-clear (30s)',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: false,
-    onetimesecret: false,
-  },
-  {
-    feature: 'Burn after reading (race-condition proof)',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: true,
-    onetimesecret: true,
-  },
-  {
-    feature: 'Password + zero-knowledge combined',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: 'partial',
-    onetimesecret: false,
-  },
-  {
-    feature: 'Sandboxed HTML paste rendering',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: false,
-    onetimesecret: false,
-  },
-  {
-    feature: 'Syntax highlighting',
-    scorchpad: true,
-    pastebin: true,
-    privatebin: true,
-    onetimesecret: false,
-  },
-  {
-    feature: 'Warrant canary',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: false,
-    onetimesecret: false,
-  },
-  {
-    feature: 'No ads (Pro)',
-    scorchpad: true,
-    pastebin: 'partial',
-    privatebin: true,
-    onetimesecret: true,
-  },
-  {
-    feature: 'Modern UI',
-    scorchpad: true,
-    pastebin: false,
-    privatebin: false,
-    onetimesecret: 'partial',
-  },
+  { feature: 'Zero-knowledge encryption', scorchpad: true, pastebin: false, privatebin: true, onetimesecret: false },
+  { feature: 'AES-256-GCM + PBKDF2 (310k iterations)', scorchpad: true, pastebin: false, privatebin: 'partial', onetimesecret: false },
+  { feature: 'Key never touches the server', scorchpad: true, pastebin: false, privatebin: true, onetimesecret: false },
+  { feature: 'URL fragment key erasure after decrypt', scorchpad: true, pastebin: false, privatebin: false, onetimesecret: false },
+  { feature: 'Clipboard auto-clear (30s)', scorchpad: true, pastebin: false, privatebin: false, onetimesecret: false },
+  { feature: 'Burn after reading (race-condition proof)', scorchpad: true, pastebin: false, privatebin: true, onetimesecret: true },
+  { feature: 'Password + zero-knowledge combined', scorchpad: true, pastebin: false, privatebin: 'partial', onetimesecret: false },
+  { feature: 'Sandboxed HTML paste rendering', scorchpad: true, pastebin: false, privatebin: false, onetimesecret: false },
+  { feature: 'Syntax highlighting', scorchpad: true, pastebin: true, privatebin: true, onetimesecret: false },
+  { feature: 'Warrant canary', scorchpad: true, pastebin: false, privatebin: false, onetimesecret: false },
+  { feature: 'No ads (Pro)', scorchpad: true, pastebin: 'partial', privatebin: true, onetimesecret: true },
+  { feature: 'Modern UI', scorchpad: true, pastebin: false, privatebin: false, onetimesecret: 'partial' },
 ];
 
 type CellValue = boolean | 'partial';
@@ -101,7 +33,6 @@ function ComparisonCell({ value }: { value: CellValue }) {
   return <X size={15} className="mx-auto text-gray-300 dark:text-white/15" />;
 }
 
-// ─── Why ScorchPad reasons ────────────────────────────────────────────────────
 const REASONS = [
   {
     icon: Shield,
@@ -131,14 +62,9 @@ const REASONS = [
 ];
 
 export default function PricingPage() {
-  const [isIndia, setIsIndia] = useState(false);
-
-  useEffect(() => {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (tz.includes('Asia/Calcutta') || tz.includes('Asia/Kolkata')) {
-      setIsIndia(true);
-    }
-  }, []);
+  // 'india' = Razorpay (INR), 'intl' = Lemon Squeezy (USD)
+  const [region, setRegion] = useState<'india' | 'intl'>('india');
+  const isIndia = region === 'india';
 
   const freeFeatures = [
     { text: '50 KB max paste size', included: true },
@@ -165,8 +91,8 @@ export default function PricingPage() {
   return (
     <div className="flex flex-col items-center pt-12 pb-24">
 
-      {/* ── Hero ──────────────────────────────────────────────────────────── */}
-      <div className="text-center max-w-2xl mx-auto mb-16 px-4">
+      {/* ── Hero ── */}
+      <div className="text-center max-w-2xl mx-auto mb-10 px-4">
         <h1 className="text-4xl font-bold tracking-tighter mb-4 text-gray-900 dark:text-white uppercase">
           Subscription Plans
         </h1>
@@ -175,8 +101,56 @@ export default function PricingPage() {
         </p>
       </div>
 
-      {/* ── Pricing cards ─────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 w-full max-w-7xl mx-auto px-4">
+      {/* ── Region tab switcher ── */}
+      <div className="flex items-center gap-2 mb-12 bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl p-1">
+        {/* International tab — disabled until LS approved */}
+        <button
+          disabled={!INTERNATIONAL_PAYMENTS_ENABLED}
+          onClick={() => INTERNATIONAL_PAYMENTS_ENABLED && setRegion('intl')}
+          className={`relative px-5 py-2.5 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-all ${
+            region === 'intl' && INTERNATIONAL_PAYMENTS_ENABLED
+              ? 'bg-white dark:bg-[#111] text-gray-900 dark:text-white shadow-sm border border-gray-200 dark:border-white/10'
+              : INTERNATIONAL_PAYMENTS_ENABLED
+              ? 'text-gray-500 dark:text-white/40 hover:text-gray-700 dark:hover:text-white/60 cursor-pointer'
+              : 'text-gray-400 dark:text-white/20 cursor-not-allowed'
+          }`}
+        >
+          $
+          {!INTERNATIONAL_PAYMENTS_ENABLED && (
+            <span className="ml-2 text-[9px] font-bold text-indigo-500 dark:text-orange-400 uppercase tracking-widest">
+              Coming Soon
+            </span>
+          )}
+        </button>
+
+        {/* India tab — always active */}
+        <button
+          onClick={() => setRegion('india')}
+          className={`px-5 py-2.5 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-all ${
+            region === 'india'
+              ? 'bg-white dark:bg-[#111] text-gray-900 dark:text-white shadow-sm border border-gray-200 dark:border-white/10'
+              : 'text-gray-500 dark:text-white/40 hover:text-gray-700 dark:hover:text-white/60'
+          }`}
+        >
+          India
+          <span className="ml-2 text-[9px] font-normal text-gray-400 dark:text-white/30 normal-case tracking-normal">
+            (UPI)
+          </span>
+        </button>
+      </div>
+
+      {/* ── International coming soon banner ── */}
+      {!INTERNATIONAL_PAYMENTS_ENABLED && (
+        <div className="w-full max-w-2xl mx-auto px-4 mb-10">
+          <div className="flex items-center gap-3 px-5 py-3.5 rounded-xl border border-indigo-200 dark:border-orange-500/20 bg-indigo-50/50 dark:bg-orange-500/5 text-[11px] font-mono text-indigo-700 dark:text-orange-400 tracking-wide">
+            <span className="shrink-0">⚡</span>
+            International payments ($) are coming soon — currently processing our payment provider approval. Indian users can subscribe right now via UPI, NetBanking, or Card.
+          </div>
+        </div>
+      )}
+
+      {/* ── Pricing cards ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 w-full max-w-7xl mx-auto px-4">
         <PricingCard
           plan="free"
           title="Free"
@@ -195,17 +169,15 @@ export default function PricingPage() {
           isPro={false}
           isIndia={isIndia}
         />
-        {isIndia && (
-          <PricingCard
-            plan="half-yearly"
-            title="Pro Half-Yearly"
-            price="₹599"
-            description="6-month plan for power users."
-            features={proFeatures}
-            isPro={true}
-            isIndia={isIndia}
-          />
-        )}
+        <PricingCard
+          plan="half-yearly"
+          title="Pro Half-Yearly"
+          price={isIndia ? '₹599' : '$12'}
+          description="6-month plan for power users."
+          features={proFeatures}
+          isPro={true}
+          isIndia={isIndia}
+        />
         <PricingCard
           plan="annual"
           title="Pro Annual"
@@ -217,7 +189,7 @@ export default function PricingPage() {
         />
       </div>
 
-      {/* ── Why ScorchPad narrative ───────────────────────────────────────── */}
+      {/* ── Why ScorchPad narrative ── */}
       <div className="w-full max-w-4xl mx-auto px-4 mt-32">
         <div className="text-center mb-16">
           <p className="text-[10px] font-mono text-indigo-600 dark:text-orange-500 uppercase tracking-[0.3em] mb-3">
@@ -253,7 +225,7 @@ export default function PricingPage() {
         </div>
       </div>
 
-      {/* ── Comparison table ──────────────────────────────────────────────── */}
+      {/* ── Comparison table ── */}
       <div className="w-full max-w-4xl mx-auto px-4 mt-32">
         <div className="text-center mb-12">
           <p className="text-[10px] font-mono text-indigo-600 dark:text-orange-500 uppercase tracking-[0.3em] mb-3">
@@ -268,7 +240,6 @@ export default function PricingPage() {
         </div>
 
         <div className="border border-gray-200 dark:border-white/10 rounded-xl overflow-hidden shadow-sm dark:shadow-lg">
-          {/* Table header */}
           <div className="grid grid-cols-5 bg-gray-50 dark:bg-[#080808] border-b border-gray-200 dark:border-white/10">
             <div className="col-span-1 px-5 py-4 text-[10px] font-bold text-gray-500 dark:text-white/40 uppercase tracking-widest">
               Feature
@@ -287,7 +258,6 @@ export default function PricingPage() {
             ))}
           </div>
 
-          {/* Table rows */}
           {COMPARISON.map((row, i) => (
             <div
               key={row.feature}
@@ -321,7 +291,7 @@ export default function PricingPage() {
         </p>
       </div>
 
-      {/* ── Bottom CTA ────────────────────────────────────────────────────── */}
+      {/* ── Bottom CTA ── */}
       <div className="w-full max-w-2xl mx-auto px-4 mt-24 text-center">
         <h2 className="text-2xl font-bold tracking-tighter text-gray-900 dark:text-white uppercase mb-4">
           Start for free. Upgrade when you need it.

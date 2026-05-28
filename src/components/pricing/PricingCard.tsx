@@ -1,4 +1,3 @@
-// FIX: Added 'use client' — component uses window.location.href in click handler
 'use client';
 import { FeatureRow } from './FeatureRow';
 import { openCheckout, PlanDuration } from '../../mocks/api.mock';
@@ -14,16 +13,17 @@ function getSavingsBadge(
   const monthlyBase = isIndia ? MONTHLY_BASE_INR : MONTHLY_BASE_USD;
 
   if (plan === 'half-yearly') {
-    // ₹599 for 6 months vs ₹149 × 6 = ₹894
-    const fullPrice = isIndia ? 599 : null;
-    if (fullPrice === null) return null;
+    // India: ₹599 vs ₹149×6=₹894 → Save 33%
+    // Intl:  $12  vs $3×6=$18    → Save 33%
+    const fullPrice = isIndia ? 599 : 12;
     const wouldPay = monthlyBase * 6;
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
     return `Save ${saving}%`;
   }
 
   if (plan === 'annual') {
-    // ₹999 / $24 for 12 months
+    // India: ₹999  vs ₹149×12=₹1788 → Save 44%
+    // Intl:  $24   vs $3×12=$36     → Save 33%
     const fullPrice = isIndia ? 999 : 24;
     const wouldPay = monthlyBase * 12;
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
@@ -38,7 +38,7 @@ function getMonthlyEquivalent(
   isIndia: boolean
 ): string | null {
   if (plan === 'half-yearly') {
-    return isIndia ? '≈ ₹100/mo' : null;
+    return isIndia ? '≈ ₹100/mo' : '≈ $2/mo';
   }
   if (plan === 'annual') {
     return isIndia ? '≈ ₹83/mo' : '≈ $2/mo';

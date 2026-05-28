@@ -8,8 +8,9 @@
 export type UserTier = 'anonymous' | 'free' | 'pro';
 
 // Plan duration type.
-// 'half-yearly' is ONLY available to Indian users via Razorpay.
-// Lemon Squeezy (international) supports 'monthly' and 'annual' only.
+// 'half-yearly' is available to ALL users:
+//   - Indian users  → Razorpay  (₹599/6mo)
+//   - International → Lemon Squeezy ($12/6mo)
 export type PlanDuration = 'monthly' | 'half-yearly' | 'annual';
 
 export interface UserSubscription {
@@ -46,7 +47,7 @@ export interface GetPasteResponse {
   viewsRemaining: number;      // -1 = unlimited; 0 = expired (should not happen, server deletes)
   expiresAt: number;           // Unix timestamp ms
   hasPassword: boolean;
-  language: string | null;     // syntax highlight language, e.g. 'typescript' | null
+  language: string | null;
 }
 
 export interface VerifyPasswordResponse {
