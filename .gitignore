@@ -1,8 +1,26 @@
+# dependencies
 node_modules/
+
+# next.js
+.next/
+out/
 build/
 dist/
-coverage/
-.DS_Store
-*.log
+
+# env files — never commit secrets
 .env*
 !.env.example
+
+# testing
+coverage/
+playwright-report/
+test-results/
+
+# misc
+.DS_Store
+*.log
+*.tsbuildinfo
+next-env.d.ts
+
+# sentry
+.sentryclirc
