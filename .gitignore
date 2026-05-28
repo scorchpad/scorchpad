@@ -24,3 +24,5 @@ next-env.d.ts
 
 # sentry
 .sentryclirc
+# Visual Studio
+.vs/

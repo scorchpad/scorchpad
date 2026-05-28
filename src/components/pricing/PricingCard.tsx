@@ -3,14 +3,10 @@
 import { FeatureRow } from './FeatureRow';
 import { openCheckout, PlanDuration } from '../../mocks/api.mock';
 
-// Monthly base prices used to compute the "Save X%" badge on multi-month plans.
-const MONTHLY_BASE_INR = 299;
-const MONTHLY_BASE_USD = 5;
+// Monthly base prices — update these if pricing changes
+const MONTHLY_BASE_INR = 149;
+const MONTHLY_BASE_USD = 3;
 
-/**
- * Computes the savings percentage for a plan relative to the monthly base price.
- * Returns null for the free plan or the monthly plan itself.
- */
 function getSavingsBadge(
   plan: PlanDuration | 'free',
   isIndia: boolean
@@ -18,8 +14,8 @@ function getSavingsBadge(
   const monthlyBase = isIndia ? MONTHLY_BASE_INR : MONTHLY_BASE_USD;
 
   if (plan === 'half-yearly') {
-    // ₹1,499 for 6 months vs ₹299 × 6 = ₹1,794
-    const fullPrice = isIndia ? 1499 : null;
+    // ₹599 for 6 months vs ₹149 × 6 = ₹894
+    const fullPrice = isIndia ? 599 : null;
     if (fullPrice === null) return null;
     const wouldPay = monthlyBase * 6;
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
@@ -27,8 +23,8 @@ function getSavingsBadge(
   }
 
   if (plan === 'annual') {
-    // ₹2,499 / $49 for 12 months
-    const fullPrice = isIndia ? 2499 : 49;
+    // ₹999 / $24 for 12 months
+    const fullPrice = isIndia ? 999 : 24;
     const wouldPay = monthlyBase * 12;
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
     return `Save ${saving}%`;
@@ -37,16 +33,15 @@ function getSavingsBadge(
   return null;
 }
 
-/** Per-month equivalent price shown alongside the billing-period total. */
 function getMonthlyEquivalent(
   plan: PlanDuration | 'free',
   isIndia: boolean
 ): string | null {
   if (plan === 'half-yearly') {
-    return isIndia ? '≈ ₹250/mo' : null;
+    return isIndia ? '≈ ₹100/mo' : null;
   }
   if (plan === 'annual') {
-    return isIndia ? '≈ ₹208/mo' : '≈ $4.08/mo';
+    return isIndia ? '≈ ₹83/mo' : '≈ $2/mo';
   }
   return null;
 }
@@ -102,7 +97,6 @@ export function PricingCard({
         {description}
       </p>
 
-      {/* Price block with optional savings badge and monthly-equivalent hint */}
       <div className="my-6">
         <div className="flex items-start gap-3 flex-wrap">
           <div>
@@ -115,14 +109,12 @@ export function PricingCard({
               </span>
             )}
           </div>
-          {/* FIX 5: "Save X%" badge on multi-month plans */}
           {savingsBadge && (
             <span className="inline-flex items-center px-2 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold uppercase tracking-widest border border-emerald-200 dark:border-emerald-700/40 self-center">
               {savingsBadge}
             </span>
           )}
         </div>
-        {/* Monthly equivalent for annual / half-yearly plans */}
         {monthlyEquiv && (
           <p className="text-[11px] font-mono text-gray-400 dark:text-white/30 mt-1">
             {monthlyEquiv}
