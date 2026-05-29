@@ -85,8 +85,32 @@ export default function TermsPage() {
       </Section>
 
       <Section title="7. Limitation of Liability">
-        TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL RSAAT LABS BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, PUNITIVE, OR EXEMPLARY DAMAGES. OUR TOTAL CUMULATIVE LIABILITY TO YOU FOR ALL CLAIMS SHALL NOT EXCEED THE AMOUNT YOU PAID US IN THE TWELVE MONTHS PRECEDING THE CLAIM, OR ₹100 (ONE HUNDRED RUPEES), WHICHEVER IS GREATER.
-      </Section>
+  TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, RSAAT LABS, ITS OPERATORS, AND ANY AFFILIATED PERSONS SHALL HAVE ABSOLUTELY NO LIABILITY OF ANY KIND — LEGAL, EQUITABLE, CONTRACTUAL, TORTIOUS, STATUTORY, OR OTHERWISE — ARISING OUT OF OR IN CONNECTION WITH THIS SERVICE OR THESE TERMS.
+
+  <p className="mt-4">THIS INCLUDES, WITHOUT LIMITATION, ANY LIABILITY FOR:</p>
+  <ul className="mt-3 space-y-1.5 pl-1">
+    {[
+      'Loss of data, pastes, content, or access',
+      'Loss of revenue, profits, business, or goodwill',
+      'Service interruptions, downtime, or outages',
+      'Unauthorized access to or alteration of your data',
+      'Conduct or content of any third party using the Service',
+      'Any damages resulting from viruses, malware, or security vulnerabilities',
+      'Any indirect, incidental, special, punitive, or consequential damages of any nature',
+    ].map((item) => (
+      <li key={item} className="flex items-start gap-2.5">
+        <span className="w-1 h-1 rounded-full bg-gray-400 dark:bg-white/30 shrink-0 mt-2" />
+        <span>{item}</span>
+      </li>
+    ))}
+  </ul>
+
+  <p className="mt-4">WHETHER OR NOT RSAAT LABS HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES, AND REGARDLESS OF THE THEORY OF LIABILITY.</p>
+
+  <p className="mt-4">IF, DESPITE THE FOREGOING, A COURT OF COMPETENT JURISDICTION FINDS RSAAT LABS LIABLE FOR ANY REASON WHATSOEVER, OUR TOTAL AGGREGATE LIABILITY TO YOU FOR ALL CLAIMS COMBINED SHALL NOT EXCEED ₹1 (ONE RUPEE). NO EXCEPTIONS. NO NEGOTIATIONS. NO REFUNDS.</p>
+
+  <p className="mt-4">BY USING THIS SERVICE, YOU EXPRESSLY WAIVE ANY RIGHT TO SEEK DAMAGES OF ANY KIND FROM RSAAT LABS. IF YOU DO NOT ACCEPT THIS, YOUR ONLY REMEDY IS TO STOP USING THE SERVICE IMMEDIATELY.</p>
+</Section>
 
       <Section title="8. Indemnification">
         You agree to indemnify, defend, and hold harmless Rsaat Labs and its operators from and against any and all claims, liabilities, damages, losses, costs, and expenses (including reasonable legal fees) arising out of or in any way connected with your use of the Service, your violation of these Terms, or any content you share through the Service.
