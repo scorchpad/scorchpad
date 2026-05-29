@@ -7,12 +7,12 @@ import type { Metadata } from 'next';
 import { ClerkProvider } from '@clerk/nextjs';
 
 export const metadata: Metadata = {
-  title: { default: 'ScorchPad — Encrypted Pastebin', template: '%s | ScorchPad' },
+  title: { default: 'ScorchPad | Encrypted Pastebin', template: '%s | ScorchPad' },
   description:
     'Zero-knowledge encrypted text sharing. The server never sees your content. Auto-deletes after reading.',
   metadataBase: new URL('https://scorchpad.rsaatlabs.com'),
   openGraph: {
-    title: 'ScorchPad — Encrypted Pastebin',
+    title: 'ScorchPad | Encrypted Pastebin',
     description: 'Zero-knowledge encrypted text sharing.',
     url: 'https://scorchpad.rsaatlabs.com',
     siteName: 'ScorchPad',
