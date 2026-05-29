@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Shield } from 'lucide-react';
 
-const CONSENT_KEY = 'sp_consent_v1';
+const CONSENT_KEY = 'sp_consent_v2';
 
 function getInitialConsent(): boolean {
   if (typeof window === 'undefined') return false;

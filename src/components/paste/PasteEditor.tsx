@@ -50,7 +50,7 @@ export function PasteEditor() {
   const { handleCreate, creatingStep } = usePasteCreator();
   const [error, setError] = useState('');
   // Settings panel open/closed — collapsed by default so the textarea is the hero.
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isAnnualPro = store.tier === 'pro' && store.planDuration === 'annual';

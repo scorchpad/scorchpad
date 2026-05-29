@@ -3,20 +3,21 @@ import { Moon, Sun } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('theme');
-      if (stored === 'light' || stored === 'dark') setTheme(stored);
-      else {
-        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        setTheme(isDark ? 'dark' : 'light');
-      }
+    const stored = localStorage.getItem('theme');
+    if (stored === 'light' || stored === 'dark') {
+      setTheme(stored);
+    } else {
+      setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     }
+    setMounted(true);
   }, []);
 
   useEffect(() => {
+    if (!mounted) return;
     if (theme === 'dark') {
       document.documentElement.classList.add('dark');
       localStorage.setItem('theme', 'dark');
@@ -24,16 +25,17 @@ export function ThemeToggle() {
       document.documentElement.classList.remove('dark');
       localStorage.setItem('theme', 'light');
     }
-  }, [theme]);
+  }, [theme, mounted]);
 
-  // Avoid hydration mismatch by waiting for mount
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  if (!mounted) return <div className="w-[34px] h-[34px]" />;
+  if (!mounted) return <div className="w-9 h-9" />;
 
   return (
-    <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme" className="p-2 border rounded hover:bg-black/5 dark:border-gray-700 dark:hover:bg-white/5 transition-colors">
-      {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+    <button
+      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+      aria-label="Toggle theme"
+      className="w-9 h-9 flex items-center justify-center rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-600 dark:text-white/60 hover:text-gray-900 dark:hover:text-white transition-all"
+    >
+      {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
     </button>
   );
 }

@@ -194,7 +194,7 @@ export default function AboutPage() {
       <section className="p-6 border border-gray-200 dark:border-white/10 rounded-xl bg-white dark:bg-[#050505]">
         <h2 className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-widest mb-3">Built by Rsaat Labs</h2>
         <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide mb-3">
-          ScorchPad is a product of Rsaat Labs — an independent software laboratory focused on privacy-by-architecture. We build tools where privacy is a structural property, not a setting.
+          ScorchPad is a product of <a href="https://rsaatlabs.com" target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-orange-400 underline hover:opacity-80">Rsaat Labs</a> — an independent software laboratory focused on privacy-by-architecture. We build tools where privacy is a structural property, not a setting.
         </p>
         <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide">
           Other products:{' '}
