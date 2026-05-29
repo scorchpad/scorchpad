@@ -2,25 +2,19 @@
 import { FeatureRow } from './FeatureRow';
 import { openCheckout, PlanDuration } from '../../mocks/api.mock';
 
-// Monthly base prices — update these if pricing changes
 const MONTHLY_BASE_INR = 149;
 const MONTHLY_BASE_USD = 3;
 
-function getSavingsBadge(
-  plan: PlanDuration | 'free',
-  isIndia: boolean
-): string | null {
+function getSavingsBadge(plan: PlanDuration | 'free', isIndia: boolean): string | null {
   const monthlyBase = isIndia ? MONTHLY_BASE_INR : MONTHLY_BASE_USD;
-
   if (plan === 'half-yearly') {
-    // India: ₹599 vs ₹149×6=₹894 → Save 33%
+    // India: ₹549 vs ₹149×6=₹894 → Save 39%
     // Intl:  $12  vs $3×6=$18    → Save 33%
-    const fullPrice = isIndia ? 599 : 12;
+    const fullPrice = isIndia ? 549 : 12;
     const wouldPay = monthlyBase * 6;
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
     return `Save ${saving}%`;
   }
-
   if (plan === 'annual') {
     // India: ₹999  vs ₹149×12=₹1788 → Save 44%
     // Intl:  $24   vs $3×12=$36     → Save 33%
@@ -29,16 +23,14 @@ function getSavingsBadge(
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
     return `Save ${saving}%`;
   }
-
   return null;
 }
 
-function getMonthlyEquivalent(
-  plan: PlanDuration | 'free',
-  isIndia: boolean
-): string | null {
+function getMonthlyEquivalent(plan: PlanDuration | 'free', isIndia: boolean): string | null {
   if (plan === 'half-yearly') {
-    return isIndia ? '≈ ₹100/mo' : '≈ $2/mo';
+    // India: ₹549/6 = ₹91.5/mo ≈ ₹92/mo
+    // Intl:  $12/6  = $2/mo
+    return isIndia ? '≈ ₹92/mo' : '≈ $2/mo';
   }
   if (plan === 'annual') {
     return isIndia ? '≈ ₹83/mo' : '≈ $2/mo';
@@ -68,9 +60,7 @@ export function PricingCard({
     try {
       const { checkoutUrl } = await openCheckout(plan);
       if (typeof window !== 'undefined') window.location.href = checkoutUrl;
-    } catch {
-      // Silent — mock environment
-    }
+    } catch {}
   };
 
   const savingsBadge = getSavingsBadge(plan, isIndia);
@@ -90,19 +80,13 @@ export function PricingCard({
         </span>
       )}
 
-      <h3 className="text-xl font-bold tracking-tighter text-gray-900 dark:text-white">
-        {title}
-      </h3>
-      <p className="text-[11px] font-mono text-gray-500 dark:text-white/50 mt-2 min-h-[30px]">
-        {description}
-      </p>
+      <h3 className="text-xl font-bold tracking-tighter text-gray-900 dark:text-white">{title}</h3>
+      <p className="text-[11px] font-mono text-gray-500 dark:text-white/50 mt-2 min-h-[30px]">{description}</p>
 
       <div className="my-6">
         <div className="flex items-start gap-3 flex-wrap">
           <div>
-            <span className="text-4xl font-extrabold text-gray-900 dark:text-white">
-              {price}
-            </span>
+            <span className="text-4xl font-extrabold text-gray-900 dark:text-white">{price}</span>
             {price !== 'Free' && (
               <span className="text-gray-500 dark:text-white/40 font-medium">
                 /{plan === 'annual' ? 'yr' : plan === 'half-yearly' ? '6mo' : 'mo'}
@@ -116,9 +100,7 @@ export function PricingCard({
           )}
         </div>
         {monthlyEquiv && (
-          <p className="text-[11px] font-mono text-gray-400 dark:text-white/30 mt-1">
-            {monthlyEquiv}
-          </p>
+          <p className="text-[11px] font-mono text-gray-400 dark:text-white/30 mt-1">{monthlyEquiv}</p>
         )}
       </div>
 

@@ -1,0 +1,8 @@
+ScorchPad PGP Key
+
+A PGP key for signing the warrant canary is coming soon.
+
+In the meantime, you can verify the integrity of the warrant canary by
+checking that the "Last updated" date is within 45 days of today.
+
+For security inquiries: rsaatlabs@gmail.com
