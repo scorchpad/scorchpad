@@ -5,8 +5,6 @@ import { Shield } from 'lucide-react';
 const CONSENT_KEY = 'sp_consent_v2';
 
 export function ConsentGate({ children }: { children: React.ReactNode }) {
-  // Start with modal SHOWING — safest default for new users.
-  // useEffect will immediately hide it if consent already given.
   const [showModal, setShowModal] = useState(true);
 
   useEffect(() => {
@@ -14,9 +12,7 @@ export function ConsentGate({ children }: { children: React.ReactNode }) {
       if (localStorage.getItem(CONSENT_KEY) === 'accepted') {
         setShowModal(false);
       }
-    } catch {
-      // localStorage blocked (private browsing policy etc.) — keep modal showing
-    }
+    } catch {}
   }, []);
 
   const handleAccept = () => {
@@ -28,7 +24,6 @@ export function ConsentGate({ children }: { children: React.ReactNode }) {
     window.location.replace('https://www.google.com');
   };
 
-  // Block Escape key while modal is active
   useEffect(() => {
     if (!showModal) return;
     const block = (e: KeyboardEvent) => {
@@ -40,20 +35,11 @@ export function ConsentGate({ children }: { children: React.ReactNode }) {
 
   return (
     <>
-      {/* Page content always renders underneath */}
       {children}
-
-      {/* Modal overlays everything when consent not given */}
       {showModal && (
-        <div
-          suppressHydrationWarning
-          style={{ position: 'fixed', inset: 0, zIndex: 99999 }}
-          className="flex items-end sm:items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
-        >
-          <div
-            style={{ position: 'relative', zIndex: 100000 }}
-            className="w-full max-w-lg bg-white dark:bg-[#0A0A0A] border border-gray-200 dark:border-white/10 rounded-2xl shadow-2xl p-8"
-          >
+        <div className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="w-full max-w-lg bg-white dark:bg-[#0A0A0A] border border-gray-200 dark:border-white/10 rounded-2xl shadow-2xl p-8">
+
             {/* Logo */}
             <div className="flex items-center gap-3 mb-6">
               <div className="w-8 h-8 bg-indigo-600 dark:bg-orange-600 rounded flex items-center justify-center shrink-0">
