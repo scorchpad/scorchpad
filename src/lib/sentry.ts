@@ -32,22 +32,25 @@
 // scrubFragmentFromEvent() MUST be registered as `beforeSend` in all three
 // runtime configurations. Missing even one context is a security gap.
 //
-// ─── BUG FIX NOTE (important if you ever inline this logic) ─────────────────
+// ─── BREADCRUMBS API MIGRATION: v7 → v8 ─────────────────────────────────────
 //
-// event.breadcrumbs.values is Breadcrumb[] — a plain JavaScript array.
-// The correct way to iterate it is:
+// Sentry v7 typed breadcrumbs as a wrapper object with a `values` property:
+//   event.breadcrumbs: { values?: Breadcrumb[] }    ← v7
 //
-//   for (const crumb of event.breadcrumbs.values) { … }   ✓  iterate array
+// Sentry v8+ (this project uses v10 via @sentry/nextjs@10.54.0) replaced that
+// with a plain flat array:
+//   event.breadcrumbs: Breadcrumb[]                 ← v8+ (current)
 //
-// NOT:
+// Consequence: accessing `.values` on a Breadcrumb[] resolves to the built-in
+// Array.prototype.values METHOD (typed `() => IterableIterator<T>`), not a
+// Sentry-defined property. TypeScript rejects `for (const x of fn)` because
+// a function is not iterable. The correct v8+ pattern is:
 //
-//   for (const crumb of event.breadcrumbs.values()) { … }  ✗  calls array as
-//                                                              function → throws
-//                                                              TypeError at runtime
+//   for (const crumb of event.breadcrumbs) { … }    ← correct for v8+
 //
-// The previous sentry.*.config.ts files had the broken form. Sentry silently
-// catches the TypeError inside beforeSend, which means breadcrumb URLs were
-// NEVER being scrubbed — a live security regression.
+// DO NOT write `event.breadcrumbs.values` or `event.breadcrumbs?.values` —
+// that resolves to Array.prototype.values (the method), which is always truthy
+// and is not iterable. It is both a TypeScript error and a silent runtime bug.
 //
 // ─── @sentry/nextjs v8+ TYPE CHANGE ──────────────────────────────────────────
 //
@@ -103,11 +106,21 @@ export function scrubFragmentFromEvent(
 
   // ── 2. Navigation / XHR breadcrumb URLs ──────────────────────────────────
   //
-  // event.breadcrumbs is { values?: Breadcrumb[] }.
-  // event.breadcrumbs.values is the Breadcrumb ARRAY — iterate it directly.
-  // Do NOT append () — that would invoke the array as a function and throw.
-  if (event.breadcrumbs?.values) {
-    for (const crumb of event.breadcrumbs.values) {
+  // @sentry/nextjs v7 typed breadcrumbs as a wrapper object:
+  //   event.breadcrumbs: { values?: Breadcrumb[] }   ← v7
+  //
+  // @sentry/nextjs v8+ (including v10 which this project uses) changed the
+  // type to a plain flat array:
+  //   event.breadcrumbs: Breadcrumb[]                ← v8+ (current)
+  //
+  // Accessing `.values` on a Breadcrumb[] does NOT read a Sentry property —
+  // it resolves to Array.prototype.values, the built-in array method typed as
+  // () => IterableIterator<Breadcrumb>. TypeScript correctly rejects
+  // `for (const crumb of someFunction)` because a function is not iterable.
+  //
+  // Correct v8+ pattern: iterate event.breadcrumbs directly.
+  if (event.breadcrumbs) {
+    for (const crumb of event.breadcrumbs) {
       if (typeof crumb.data?.url === 'string') {
         crumb.data.url = crumb.data.url.split('#')[0] ?? '';
       }
