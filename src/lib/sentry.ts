@@ -48,9 +48,32 @@
 // The previous sentry.*.config.ts files had the broken form. Sentry silently
 // catches the TypeError inside beforeSend, which means breadcrumb URLs were
 // NEVER being scrubbed — a live security regression.
+//
+// ─── @sentry/nextjs v8+ TYPE CHANGE ──────────────────────────────────────────
+//
+// In @sentry/nextjs ≥ 8, the `beforeSend` hook signature narrowed from:
+//
+//   (event: Event, hint: EventHint) => Event | null          ← v7 and earlier
+//
+// to:
+//
+//   (event: ErrorEvent, hint: EventHint) => ErrorEvent | null  ← v8+
+//
+// `ErrorEvent` is a subtype of `Event` that narrows `type` to `undefined`
+// (error events have no type; only transactions have type: "transaction").
+// TypeScript correctly rejects assigning the broader `Event` to `ErrorEvent`
+// because their `type` properties are incompatible:
+//   Event.type      = EventType  ('transaction' | 'profile' | …)
+//   ErrorEvent.type = undefined
+//
+// Using `ErrorEvent` here fixes the type error in instrumentation-client.ts
+// AND instrumentation.ts (server) in one change — both import from here.
+//
+// No logic change is required. `ErrorEvent` has all the same fields as `Event`
+// (`request.url`, `breadcrumbs`, etc.) — it is purely a type narrowing.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { Event, EventHint } from '@sentry/nextjs';
+import type { ErrorEvent, EventHint } from '@sentry/nextjs';
 
 /**
  * Strip URL fragments from every Sentry event before it leaves the runtime.
@@ -58,11 +81,14 @@ import type { Event, EventHint } from '@sentry/nextjs';
  * Register this as `beforeSend` in all three Sentry init calls
  * (server, edge, client). Returning `null` silences the event entirely —
  * used here only as an absolute last resort if stripping fails.
+ *
+ * Typed as `ErrorEvent` (not `Event`) to match the `beforeSend` signature
+ * in @sentry/nextjs ≥ 8. See type-change note above.
  */
 export function scrubFragmentFromEvent(
-  event: Event,
+  event: ErrorEvent,
   _hint: EventHint
-): Event | null {
+): ErrorEvent | null {
   // ── 1. Top-level request URL ──────────────────────────────────────────────
   if (event.request?.url) {
     const clean = event.request.url.split('#')[0] ?? '';
