@@ -1,0 +1,80 @@
+// prisma/schema.prisma
+// ─────────────────────────────────────────────────────────────────────────────
+// PRIVACY GUARANTEE: Paste content is NEVER stored here.
+// Only user metadata, subscription state, and webhook deduplication records.
+// All paste blobs live in Upstash Redis with TTL — Postgres is intentionally blind.
+//
+// planType values: 'monthly' | 'half-yearly' | 'annual'
+//   'half-yearly' is set by both Razorpay (IN) and Lemon Squeezy (non-IN) webhooks.
+// paymentProvider values: 'lemonsqueezy' | 'razorpay'
+// status values: 'active' | 'cancelled' | 'paused' | 'expired' | 'past_due'
+//
+// NOTE (Prisma 7): url/directUrl are no longer set here.
+// Connection is configured via prisma.config.ts (migrate) and lib/db.ts (runtime).
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscription Subscription?
+  pasteLogs    PasteLog[]
+}
+
+model Subscription {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Payment provider IDs — one of these will be populated per subscription.
+  lemonSqueezySubscriptionId String? @unique
+  lemonSqueezyOrderId        String? @unique
+  razorpaySubscriptionId     String? @unique
+  razorpayPaymentId          String?
+
+  paymentProvider  String    @default("lemonsqueezy")
+  // planType: 'monthly' | 'half-yearly' | 'annual'
+  // 'half-yearly' is valid for both Razorpay (IN) and LS (non-IN) — see api.mock.ts
+  planType         String
+  status           String    // active | cancelled | paused | expired | past_due
+  currentPeriodEnd DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Privacy-first paste creation log.
+// Records ONLY: who created a paste, from roughly where, and how large.
+// Does NOT record: paste content, expiry, view settings, language, or decryption key.
+model PasteLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  ipHash    String?  // HMAC-SHA256(rawIp, IP_HASH_SECRET) — raw IP is never stored anywhere
+  sizeBytes Int
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([ipHash, createdAt])
+}
+
+// Webhook deduplication: ensures each LS / Razorpay event is processed exactly once.
+// Idempotency is critical — payment providers retry failed webhooks.
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique  // provider-supplied event ID, e.g. LS webhook_id
+  provider    String   // 'lemonsqueezy' | 'razorpay'
+  eventType   String
+  processedAt DateTime @default(now())
+}

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
+import { deriveTierFromClaims } from './lib/plan-limits';
 
 const isPublicRoute = createRouteMatcher([
   '/',
@@ -58,15 +59,34 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
 }
 
 export default clerkMiddleware(async (auth, request: NextRequest) => {
-  // Add request ID for tracing
+  // ── Request ID for distributed tracing ────────────────────────────────────
   const requestId = crypto.randomUUID();
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-request-id', requestId);
 
-  // Protect non-public routes
+  // ── Route protection ──────────────────────────────────────────────────────
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
+
+  // ── Tier derivation from sessionClaims — zero DB calls ────────────────────
+  // Derives isPro + planType from the Clerk JWT (already in memory from auth check).
+  // Forwards as trusted internal headers so API route handlers can read tier
+  // without re-parsing the JWT. Route handlers still call auth() independently
+  // for user-facing security decisions; these headers are informational context.
+  //
+  // Headers are set by the server — any client-supplied x-user-tier values are
+  // overwritten here before reaching route handlers.
+  const { userId, sessionClaims } = await auth();
+  const tierInfo = deriveTierFromClaims(
+    userId ?? null,
+    sessionClaims as Record<string, unknown> | null
+  );
+
+  // Overwrite any client-supplied values to prevent spoofing
+  requestHeaders.set('x-user-tier',   tierInfo.tier);
+  requestHeaders.set('x-plan-type',   tierInfo.planType   ?? '');
+  requestHeaders.set('x-period-end',  tierInfo.currentPeriodEnd ?? '');
 
   const response = NextResponse.next({
     request: { headers: requestHeaders },

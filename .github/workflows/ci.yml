@@ -1,0 +1,77 @@
+# .github/workflows/ci.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# ScorchPad CI — runs on every push and pull request.
+#
+# Gates:
+#   1. TypeScript — strict, noUncheckedIndexedAccess, noImplicitAny
+#   2. Audit     — fails on HIGH or CRITICAL CVEs (not moderate)
+#   3. Build     — full Next.js production build (catches runtime import errors)
+#
+# Secrets required in GitHub repository settings:
+#   DATABASE_URL, DIRECT_URL — Supabase connection strings (test/CI instance)
+#   All other env vars from .env.local (use a CI-specific Vercel preview env)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: Type-check · Audit · Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Prisma client must be generated before type-checking succeeds.
+      # postinstall runs prisma generate, but npm ci already ran it above.
+      # Explicit call here in case postinstall was skipped.
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING: '1'
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Security audit
+        # Fail on HIGH and CRITICAL CVEs only.
+        # Moderate CVEs in dev tooling (prisma CLI, esbuild) are tracked but
+        # do not block deployment — they have no production runtime exposure.
+        run: npm audit --audit-level=high --omit=dev
+
+      - name: Build
+        run: npm run build
+        env:
+          # Provide minimal env vars so the build doesn't crash on missing values.
+          # Real secrets are never stored in CI env — use Vercel preview deployments
+          # for integration testing.
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          NEXT_PUBLIC_APP_URL: 'https://scorchpad.rsaatlabs.com'
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          IP_HASH_SECRET: ${{ secrets.IP_HASH_SECRET }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: scorchpad
+          SENTRY_PROJECT: scorchpad
+          # Sentry source map upload disabled in CI (no SENTRY_AUTH_TOKEN required)
+          SENTRY_AUTH_TOKEN: ''

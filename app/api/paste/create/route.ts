@@ -1,0 +1,276 @@
+// app/api/paste/create/route.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/paste/create
+// Creates an encrypted paste blob in Redis, logs metadata to Postgres.
+//
+// PRIVACY INVARIANTS (these must never be broken):
+//   • The decryption key is in the URL fragment — it never reaches this handler.
+//   • encryptedBlob is opaque bytes to us — we store it, we cannot read it.
+//   • passwordSalt is returned to the client so PBKDF2 can run in-browser.
+//     We never use it for anything on the server side.
+//   • passwordProof is a one-way token for rate limiting, not decryption.
+//   • Raw IP is never stored — hashIp() before any write.
+//
+// RUNTIME: Node.js (uses Prisma). Declared explicitly below.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const runtime = 'nodejs';
+
+import { auth } from '@clerk/nextjs/server';
+import { randomBytes }  from 'node:crypto';
+
+import { redis }  from '../../../../lib/redis';
+import { db }     from '../../../../lib/db';
+import { getClientIp, hashIp } from '../../../../lib/ip';
+import {
+  getPasteRatelimiter,
+  getPasteRatelimitKey,
+  rateLimitedResponse,
+} from '../../../../lib/ratelimit';
+import {
+  deriveTierFromClaims,
+  getLimits,
+} from '../../../../lib/plan-limits';
+import {
+  redisKeys,
+  type RedisPasteRecord,
+} from '../../../../lib/paste-types';
+
+// ── Request body shape ────────────────────────────────────────────────────────
+// Mirror of CreatePasteRequest in src/mocks/api.mock.ts.
+// Field names must match exactly — a silent mismatch breaks the wiring.
+
+type CreateBody = {
+  encryptedBlob: string;
+  iv:            string;
+  expirySeconds: number;
+  maxViews:      number;
+  hasPassword:   boolean;
+  passwordSalt?: string;
+  passwordProof?: string;
+  sizeBytes:     number;
+  language:      string | null;
+};
+
+// ── Validation helpers ────────────────────────────────────────────────────────
+
+function isValidMaxViews(v: unknown): v is number {
+  if (typeof v !== 'number') return false;
+  if (!Number.isInteger(v)) return false;    // reject floats — Gotcha #15
+  if (v < 0)                return false;    // reject negatives
+  if (v > 9999)             return false;    // reject > 9999
+  return true;                               // 0 (unlimited) and 1–9999 accepted
+}
+
+function isValidLanguage(v: unknown): v is string | null {
+  return v === null || typeof v === 'string';
+}
+
+const ALLOWED_LANGUAGES = new Set([
+  'javascript', 'typescript', 'python', 'rust', 'go', 'java', 'c', 'cpp',
+  'csharp', 'ruby', 'php', 'swift', 'kotlin', 'bash', 'sql', 'html', 'css',
+  'json', 'yaml', 'toml', 'markdown', 'xml', 'dockerfile', 'graphql', 'text',
+  'plaintext',
+]);
+
+function sanitizeLanguage(lang: string | null): string | null {
+  if (lang === null) return null;
+  const normalized = lang.toLowerCase().trim();
+  return ALLOWED_LANGUAGES.has(normalized) ? normalized : null;
+}
+
+// ── Route handler ─────────────────────────────────────────────────────────────
+
+export async function POST(request: Request): Promise<Response> {
+  // ── 1. Parse and validate body ─────────────────────────────────────────────
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json(
+      { error: 'Invalid JSON body', code: 'ERR_INVALID_BODY' },
+      { status: 400 }
+    );
+  }
+
+  if (!body || typeof body !== 'object') {
+    return Response.json(
+      { error: 'Body must be an object', code: 'ERR_INVALID_BODY' },
+      { status: 400 }
+    );
+  }
+
+  const raw = body as Record<string, unknown>;
+
+  // Required fields
+  if (typeof raw['encryptedBlob'] !== 'string' || raw['encryptedBlob'].length === 0) {
+    return Response.json({ error: 'encryptedBlob is required', code: 'ERR_MISSING_FIELD' }, { status: 400 });
+  }
+  if (typeof raw['iv'] !== 'string' || raw['iv'].length === 0) {
+    return Response.json({ error: 'iv is required', code: 'ERR_MISSING_FIELD' }, { status: 400 });
+  }
+  if (typeof raw['expirySeconds'] !== 'number' || raw['expirySeconds'] <= 0) {
+    return Response.json({ error: 'expirySeconds must be a positive number', code: 'ERR_INVALID_FIELD' }, { status: 400 });
+  }
+  if (!isValidMaxViews(raw['maxViews'])) {
+    // Independent validation — Gotcha #15: never trust client validation alone
+    return Response.json(
+      { error: 'maxViews must be an integer from 0–9999', code: 'ERR_INVALID_VIEWS' },
+      { status: 400 }
+    );
+  }
+  if (typeof raw['hasPassword'] !== 'boolean') {
+    return Response.json({ error: 'hasPassword must be a boolean', code: 'ERR_INVALID_FIELD' }, { status: 400 });
+  }
+  if (typeof raw['sizeBytes'] !== 'number' || raw['sizeBytes'] <= 0) {
+    return Response.json({ error: 'sizeBytes must be a positive number', code: 'ERR_INVALID_FIELD' }, { status: 400 });
+  }
+  if (!isValidLanguage(raw['language'])) {
+    return Response.json({ error: 'language must be a string or null', code: 'ERR_INVALID_FIELD' }, { status: 400 });
+  }
+
+  // Password fields
+  if (raw['hasPassword'] === true) {
+    if (typeof raw['passwordSalt'] !== 'string' || raw['passwordSalt'].length === 0) {
+      return Response.json({ error: 'passwordSalt required when hasPassword is true', code: 'ERR_MISSING_FIELD' }, { status: 400 });
+    }
+    if (typeof raw['passwordProof'] !== 'string' || raw['passwordProof'].length === 0) {
+      return Response.json({ error: 'passwordProof required when hasPassword is true', code: 'ERR_MISSING_FIELD' }, { status: 400 });
+    }
+  }
+
+  const parsedBody: CreateBody = {
+    encryptedBlob: raw['encryptedBlob'] as string,
+    iv:            raw['iv'] as string,
+    expirySeconds: raw['expirySeconds'] as number,
+    maxViews:      raw['maxViews'] as number,
+    hasPassword:   raw['hasPassword'] as boolean,
+    passwordSalt:  typeof raw['passwordSalt'] === 'string' ? raw['passwordSalt'] : undefined,
+    passwordProof: typeof raw['passwordProof'] === 'string' ? raw['passwordProof'] : undefined,
+    sizeBytes:     raw['sizeBytes'] as number,
+    language:      sanitizeLanguage(raw['language'] as string | null),
+  };
+
+  // ── 2. Auth — anonymous users allowed, but tier gates apply ────────────────
+  const { userId, sessionClaims } = await auth();
+  const tierInfo = deriveTierFromClaims(userId ?? null, sessionClaims as Record<string, unknown> | null);
+  const { tier, planType } = tierInfo;
+  const limits = getLimits(tier, planType);
+
+  // ── 3. Rate limit — keyed by hashed IP or userId ───────────────────────────
+  const rawIp = getClientIp(request);
+  const ipHash = await hashIp(rawIp);
+  const rateLimiter = getPasteRatelimiter(tier, planType);
+  const rateLimitKey = getPasteRatelimitKey(tier, userId ?? null, ipHash);
+
+  const { success: rateLimitPassed, reset } = await rateLimiter.limit(rateLimitKey);
+  if (!rateLimitPassed) {
+    return rateLimitedResponse(reset);
+  }
+
+  // ── 4. Tier-based feature gates ────────────────────────────────────────────
+
+  // Password protection requires Free or higher
+  if (parsedBody.hasPassword && !limits.allowPassword) {
+    return Response.json(
+      { error: 'Password protection requires a free account', code: 'ERR_TIER_REQUIRED', upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/sign-up` },
+      { status: 403 }
+    );
+  }
+
+  // Custom view count (not just maxViews=1 burn-after-read)
+  if (parsedBody.maxViews > 1 && !limits.allowCustomViews) {
+    return Response.json(
+      { error: 'Custom view counts require a Pro subscription', code: 'ERR_TIER_REQUIRED', upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/pricing` },
+      { status: 403 }
+    );
+  }
+
+  // Unlimited views (maxViews=0)
+  if (parsedBody.maxViews === 0 && !limits.allowUnlimitedViews) {
+    return Response.json(
+      { error: 'Unlimited views require an Annual Pro subscription', code: 'ERR_TIER_REQUIRED', upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/pricing` },
+      { status: 403 }
+    );
+  }
+
+  // Extended expiry
+  if (parsedBody.expirySeconds > limits.maxExpirySeconds && !limits.allowExtendedExpiry) {
+    return Response.json(
+      { error: `Max expiry for your plan is ${limits.maxExpirySeconds} seconds`, code: 'ERR_EXPIRY_EXCEEDED' },
+      { status: 400 }
+    );
+  }
+  if (parsedBody.expirySeconds > limits.maxExpirySeconds) {
+    return Response.json(
+      { error: `Expiry exceeds your plan maximum of ${limits.maxExpirySeconds} seconds`, code: 'ERR_EXPIRY_EXCEEDED' },
+      { status: 400 }
+    );
+  }
+
+  // Paste size — check against plan limit (sizeBytes is client-reported plaintext size)
+  // Also check encryptedBlob byte length as a server-side verification.
+  // Base64 overhead is ~1.37x; add slack for AES-GCM auth tag (28 bytes).
+  const maxCiphertextBytes = limits.maxPlaintextBytes * 1.4 + 100;
+  if (parsedBody.sizeBytes > limits.maxPlaintextBytes) {
+    return Response.json(
+      { error: `Paste size exceeds your plan limit of ${limits.maxPlaintextBytes} bytes`, code: 'ERR_SIZE_EXCEEDED' },
+      { status: 413 }
+    );
+  }
+  if (parsedBody.encryptedBlob.length > maxCiphertextBytes) {
+    return Response.json(
+      { error: 'Encrypted blob exceeds permitted size for your plan', code: 'ERR_SIZE_EXCEEDED' },
+      { status: 413 }
+    );
+  }
+
+  // ── 5. Generate paste ID and compute expiry ────────────────────────────────
+  // 9 random bytes → 12 URL-safe base64 characters → ~72 bits of entropy
+  const id = randomBytes(9).toString('base64url');
+  const now = Date.now();
+  const expiresAt = now + parsedBody.expirySeconds * 1000;
+
+  // ── 6. Write to Redis atomically ───────────────────────────────────────────
+  // Both pv:paste:{id} and pv:views:{id} get the same TTL so they expire together.
+  // pv:views:{id} is initialised to 0 so the Lua INCR script starts from a known state.
+  const pasteRecord: RedisPasteRecord = {
+    encryptedBlob: parsedBody.encryptedBlob,
+    iv:            parsedBody.iv,
+    hasPassword:   parsedBody.hasPassword,
+    passwordSalt:  parsedBody.passwordSalt ?? null,
+    passwordProof: parsedBody.passwordProof ?? null,
+    maxViews:      parsedBody.maxViews,
+    expiresAt,
+    language:      parsedBody.language,
+  };
+
+  const pasteKey = redisKeys.paste(id);
+  const viewsKey = redisKeys.views(id);
+  const ttlSeconds = Math.ceil(parsedBody.expirySeconds);
+
+  // Use a pipeline to set both keys in a single round-trip.
+  // If one fails, both fail — maintains consistency between paste and view counter.
+  const pipeline = redis.pipeline();
+  pipeline.set(pasteKey, JSON.stringify(pasteRecord), { ex: ttlSeconds });
+  pipeline.set(viewsKey, 0, { ex: ttlSeconds });
+  await pipeline.exec();
+
+  // ── 7. Log paste creation to Postgres (metadata only, never content) ───────
+  // Fire-and-forget with error suppression — a logging failure must never
+  // prevent a paste from being created.
+  db.pasteLog.create({
+    data: {
+      userId:    userId ?? null,
+      ipHash,
+      sizeBytes: parsedBody.sizeBytes,
+    },
+  }).catch((err: unknown) => {
+    console.error('[scorchpad] PasteLog write failed:', err instanceof Error ? err.message : 'unknown');
+  });
+
+  // ── 8. Return paste ID ─────────────────────────────────────────────────────
+  // CreatePasteResponse shape from api.mock.ts: { id: string }
+  // Nothing else — the client builds the shareable URL from the ID + the key fragment.
+  return Response.json({ id }, { status: 201 });
+}
