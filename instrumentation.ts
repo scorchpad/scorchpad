@@ -68,14 +68,25 @@ export function register(): void {
   // ── Node.js server runtime ─────────────────────────────────────────────────
   // Handles: App Router pages, Route Handlers, Server Actions, middleware
   // running on the Node.js adapter.
+  //
+  // ── NOTE: autoSessionTracking removed in @sentry/nextjs v8+ ─────────────
+  //
+  // `autoSessionTracking` existed in Sentry v7 and was dropped entirely in
+  // v8. It is absent from NodeOptions in your installed version (v10), so
+  // TypeScript correctly rejects it as an unknown property.
+  //
+  // What replaced it: Sentry v8+ tracks server health automatically via the
+  // spans / traces pipeline. Unhandled rejections and uncaught exceptions are
+  // captured by the SDK's built-in Node.js integrations
+  // (onUncaughtExceptionIntegration, onUnhandledRejectionIntegration), which
+  // are active by default — no explicit option required.
+  //
+  // Migration reference:
+  //   https://docs.sentry.io/platforms/javascript/migration/v7-to-v8/
+  // ─────────────────────────────────────────────────────────────────────────
   if (runtime === 'nodejs') {
     Sentry.init({
       ...commonOptions,
-
-      // Capture unhandled promise rejections and uncaught exceptions on the
-      // Node.js process. Disabled by default in Sentry v8+ for serverless;
-      // enable explicitly here so long-lived workers catch everything.
-      autoSessionTracking: true,
     });
   }
 
