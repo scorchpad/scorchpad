@@ -67,3 +67,19 @@ Sentry.init({
 
   debug: process.env.NODE_ENV !== 'production',
 });
+
+// ─── Navigation instrumentation ───────────────────────────────────────────────
+//
+// Required by @sentry/nextjs ≥ 9 to capture client-side route transitions as
+// Sentry performance transactions. Without this export, navigations between
+// App Router pages are invisible to Sentry — you see page-load spans but no
+// navigation spans, making performance analysis incomplete.
+//
+// Build log warning this resolves:
+//   [@sentry/nextjs] ACTION REQUIRED: To instrument navigations, the Sentry
+//   SDK requires you to export an `onRouterTransitionStart` hook from your
+//   `instrumentation-client.(js|ts)` file.
+//
+// Docs: https://docs.sentry.io/platforms/javascript/guides/nextjs/
+//       configuration/app-router/#navigation-instrumentation
+export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;

@@ -31,6 +31,18 @@
 //   Sentry.captureException() here uses the same SDK instance initialised in
 //   instrumentation-client.ts, which has scrubFragmentFromEvent() as beforeSend.
 //   URL fragments cannot leak through this error path either.
+//
+// ─── REACT 19 TYPE NOTE ──────────────────────────────────────────────────────
+//
+//   @types/react@19 removed the global `JSX` namespace entirely.
+//   `JSX.Element` no longer resolves — use `React.JSX.Element` instead.
+//   The `React` namespace is available globally in Next.js projects via the
+//   auto-generated `next-env.d.ts` (written on first `next build`), so no
+//   explicit `import React from 'react'` is required here.
+//
+//   Migration guide: https://react.dev/blog/2024/04/25/react-19-upgrade-guide
+//   Relevant type change: https://github.com/DefinitelyTyped/DefinitelyTyped/
+//     pull/69022 — "Remove global JSX namespace from @types/react"
 // ─────────────────────────────────────────────────────────────────────────────
 
 'use client';
@@ -45,7 +57,9 @@ interface GlobalErrorProps {
   reset: () => void;
 }
 
-export default function GlobalError({ error, reset }: GlobalErrorProps): JSX.Element {
+// React.JSX.Element: the correct return type in @types/react ≥ 19.
+// The global JSX namespace was removed; the type now lives under React.JSX.
+export default function GlobalError({ error, reset }: GlobalErrorProps): React.JSX.Element {
   useEffect(() => {
     // Report the uncaught render error to Sentry.
     // scrubFragmentFromEvent() runs inside beforeSend — no URL fragments leak.
