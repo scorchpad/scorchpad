@@ -1,20 +1,33 @@
 // src/components/layout/Header.tsx
 // ─────────────────────────────────────────────────────────────────────────────
 // Site-wide navigation header.
-// FIX: Replaced hardcoded "NEW PASTE" link placeholder with actual Clerk
-// authentication controls (SignedIn / SignedOut / UserButton / SignInButton).
+//
+// CLERK v7 MIGRATION FIX:
+//   @clerk/nextjs ≥ 7 removed `SignedIn` and `SignedOut` as named exports.
+//   They are replaced by `<Show when="signed-in">` / `<Show when="signed-out">`,
+//   a single async Server Component that covers both conditional rendering cases.
+//
+//   Old (< v7):   import { SignedIn, SignedOut } from '@clerk/nextjs'
+//   New (v7+):    import { Show }               from '@clerk/nextjs'
+//
+//   The `Header` function is `async` because `Show` is an async Server Component;
+//   React 19 + Next.js App Router handle the async composition natively.
+//   `SignInButton` and `UserButton` remain as Client Components — they are
+//   passed as serialised element references to the Server Component tree, which
+//   is the standard Next.js RSC composition model and requires no change.
+//
+// All other logic (routes, styles, ThemeToggle) is unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Link from 'next/link';
 import {
-  SignedIn,
-  SignedOut,
+  Show,
   SignInButton,
   UserButton,
 } from '@clerk/nextjs';
 import { ThemeToggle } from '../ui/ThemeToggle';
 
-export function Header() {
+export async function Header() {
   return (
     <header className="w-full h-16 border-b border-gray-200 dark:border-white/10 flex items-center justify-between px-4 sm:px-8 bg-white dark:bg-[#0A0A0A] top-0 sticky z-50 transition-colors">
       {/* ── Logo ─────────────────────────────────────────────────────────── */}
@@ -46,19 +59,22 @@ export function Header() {
         </Link>
 
         {/* Dashboard link — only visible when signed in */}
-        <SignedIn>
+        {/* Show when="signed-in" replaces the old <SignedIn> component (removed in @clerk/nextjs@7) */}
+        <Show when="signed-in" fallback={null}>
           <Link
             href="/dashboard"
             className="text-sm font-medium text-gray-500 dark:text-white/50 hover:text-gray-900 dark:hover:text-white transition-colors"
           >
             Dashboard
           </Link>
-        </SignedIn>
+        </Show>
 
         <ThemeToggle />
 
         {/* ── Auth controls ───────────────────────────────────────────── */}
-        <SignedOut>
+
+        {/* Show when="signed-out" replaces the old <SignedOut> component (removed in @clerk/nextjs@7) */}
+        <Show when="signed-out" fallback={null}>
           {/* Sign-in button — Clerk redirects back after auth */}
           <SignInButton mode="redirect">
             <button
@@ -68,9 +84,9 @@ export function Header() {
               Sign in
             </button>
           </SignInButton>
-        </SignedOut>
+        </Show>
 
-        <SignedIn>
+        <Show when="signed-in" fallback={null}>
           {/* UserButton: avatar dropdown with account + sign-out */}
           <UserButton
             appearance={{
@@ -79,7 +95,7 @@ export function Header() {
               },
             }}
           />
-        </SignedIn>
+        </Show>
 
         {/* New paste CTA — always visible */}
         <Link
