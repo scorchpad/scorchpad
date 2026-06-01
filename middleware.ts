@@ -1,8 +1,29 @@
+// middleware.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// Clerk authentication + security headers for every request.
+//
+// SECURITY FIXES applied here:
+//
+//   1. Public static assets (pgp-key.txt, robots.txt, warrant-canary.txt,
+//      sitemap.xml) are now explicitly whitelisted as public routes so they
+//      are accessible without authentication. Previously /pgp-key.txt was
+//      protected, causing the "Sign In (Mock)" redirect on the warrant canary
+//      PGP link.
+//
+//   2. PRIVATE-KEY-KEEP-SECRET.txt guard: any path that matches the private
+//      key filename returns an explicit 403 BEFORE auth runs. Defence-in-depth
+//      — the real fix is to delete that file from /public and add it to
+//      .gitignore. Never commit private keys.
+//
+//   3. All existing security headers preserved unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 import { deriveTierFromClaims } from './lib/plan-limits';
 
+// ── Public routes: no authentication required ─────────────────────────────────
 const isPublicRoute = createRouteMatcher([
   '/',
   '/pricing',
@@ -17,16 +38,38 @@ const isPublicRoute = createRouteMatcher([
   '/api/paste/(.*)',
   '/api/csp-report',
   '/api/webhooks/(.*)',
+  '/api/health',
+  // ── Static public files in /public ───────────────────────────────────────
+  // Next.js middleware runs BEFORE the static file server, so we must
+  // explicitly list these or unauthenticated requests get redirected to /sign-in.
+  '/pgp-key.txt',
+  '/robots.txt',
+  '/warrant-canary.txt',   // raw signed canary text (verifiable offline)
+  '/sitemap.xml',
+  '/.well-known/(.*)',
+  '/favicon.svg',
+  '/favicon.ico',
 ]);
 
+// ── Private key path guard ─────────────────────────────────────────────────────
+// Defence-in-depth: if the PRIVATE key file was accidentally committed to /public,
+// block it at the edge before Clerk even runs. A 403 prevents exposure even to
+// authenticated users.
+// THE REAL FIX: delete the file from /public and add it to .gitignore.
+function isPrivateKeyPath(pathname: string): boolean {
+  const lower = pathname.toLowerCase();
+  return (
+    lower.includes('private') ||
+    lower.includes('private-key') ||
+    lower === '/private-key-keep-secret.txt' ||
+    lower === '/private-key-keep-secret'
+  );
+}
+
+// ── Security headers ──────────────────────────────────────────────────────────
 function addSecurityHeaders(response: NextResponse): NextResponse {
-  // ── Content Security Policy ──────────────────────────────────────────────
-  // No nonce — Next.js 15 requires deep nonce plumbing we'll add in backend.
-  // domain-based allowlist is correct and functional now.
   const csp = [
     "default-src 'self'",
-    // Next.js needs unsafe-inline for its own injected scripts + inline event handlers
-    // unsafe-eval needed by some Clerk internals
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' blob: data: https:",
@@ -35,9 +78,7 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
     "base-uri 'self'",
     "form-action 'self' https://checkout.razorpay.com https://*.lemonsqueezy.com",
     "frame-ancestors 'none'",
-    // Clerk needs WebSocket connect + API endpoints
     "connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev wss://*.clerk.accounts.dev https://*.upstash.io https://o4511466116153344.ingest.us.sentry.io",
-    // Clerk loads UI components in iframes
     "frame-src https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev",
     "worker-src 'self'",
     "upgrade-insecure-requests",
@@ -52,41 +93,49 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
   response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
   response.headers.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
   response.headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-  // Removed COEP — credentialless blocks Clerk iframes on some browsers
   response.headers.set('Cross-Origin-Resource-Policy', 'same-origin');
 
   return response;
 }
 
+// ── Main middleware ────────────────────────────────────────────────────────────
 export default clerkMiddleware(async (auth, request: NextRequest) => {
-  // ── Request ID for distributed tracing ────────────────────────────────────
+  const { pathname } = request.nextUrl;
+
+  // ── 1. Hard block private key paths — 403, no redirect, no leakage ────────
+  if (isPrivateKeyPath(pathname)) {
+    return new NextResponse(
+      'Forbidden. Private keys must not be placed in the /public directory.',
+      {
+        status: 403,
+        headers: {
+          'Content-Type': 'text/plain',
+          'Cache-Control': 'no-store',
+        },
+      }
+    );
+  }
+
+  // ── 2. Request ID for distributed tracing ─────────────────────────────────
   const requestId = crypto.randomUUID();
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-request-id', requestId);
 
-  // ── Route protection ──────────────────────────────────────────────────────
+  // ── 3. Route protection ───────────────────────────────────────────────────
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
 
-  // ── Tier derivation from sessionClaims — zero DB calls ────────────────────
-  // Derives isPro + planType from the Clerk JWT (already in memory from auth check).
-  // Forwards as trusted internal headers so API route handlers can read tier
-  // without re-parsing the JWT. Route handlers still call auth() independently
-  // for user-facing security decisions; these headers are informational context.
-  //
-  // Headers are set by the server — any client-supplied x-user-tier values are
-  // overwritten here before reaching route handlers.
+  // ── 4. Tier derivation from sessionClaims — zero DB calls ─────────────────
   const { userId, sessionClaims } = await auth();
   const tierInfo = deriveTierFromClaims(
     userId ?? null,
     sessionClaims as Record<string, unknown> | null
   );
 
-  // Overwrite any client-supplied values to prevent spoofing
-  requestHeaders.set('x-user-tier',   tierInfo.tier);
-  requestHeaders.set('x-plan-type',   tierInfo.planType   ?? '');
-  requestHeaders.set('x-period-end',  tierInfo.currentPeriodEnd ?? '');
+  requestHeaders.set('x-user-tier',  tierInfo.tier);
+  requestHeaders.set('x-plan-type',  tierInfo.planType   ?? '');
+  requestHeaders.set('x-period-end', tierInfo.currentPeriodEnd ?? '');
 
   const response = NextResponse.next({
     request: { headers: requestHeaders },

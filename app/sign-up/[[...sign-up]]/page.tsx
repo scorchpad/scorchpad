@@ -1,8 +1,20 @@
+// app/sign-up/[[...sign-up]]/page.tsx
+// ─────────────────────────────────────────────────────────────────────────────
+// Clerk-hosted sign-up page.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { SignUp } from '@clerk/nextjs';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'Create Account',
+  robots: { index: false, follow: false },
+};
+
 export default function SignUpPage() {
   return (
-    <div className="pt-24 pb-24 max-w-sm mx-auto w-full text-center">
-      <h1 className="text-2xl font-bold mb-4">Sign Up (Mock)</h1>
-      <p className="text-sm text-gray-500">Clerk sign-up component goes here.</p>
+    <div className="flex justify-center items-center py-20 px-4">
+      <SignUp />
     </div>
   );
 }

@@ -1,18 +1,12 @@
 // app/api/user/action-check/route.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/user/action-check
-// Returns { allowed, reason?, upgradeUrl? } for a given ScorchPad feature action.
+// Returns { allowed, reason?, upgradeUrl? } for a given ScorchPad action.
 //
-// PURPOSE: Lets the editor UI know which controls to enable before the user
-// attempts to create a paste. This is informational — the actual enforcement
-// gate is in POST /api/paste/create (which re-validates every field regardless
-// of what this endpoint returns).
+// FIX: password_protection now correctly reports "requires a Pro subscription"
+// (was "requires a free account" — wrong per spec A.6 which gates password on Pro).
 //
-// Why JWT claims (not DB): This is called on editor mount, not during checkout
-// polling. Speed matters. A slightly-stale tier (JWT refreshes every ~60 s)
-// causes a brief UI inconsistency, not a security gap — create enforces strictly.
-//
-// RUNTIME: Edge — no Prisma, no Node.js imports.
+// RUNTIME: Edge — no Prisma.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const runtime = 'edge';
@@ -24,9 +18,6 @@ import {
   getUpgradeUrl,
 } from '../../../../lib/plan-limits';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-// Mirror of ScorchPadAction in src/mocks/api.mock.ts.
 type ScorchPadAction =
   | 'unlimited_views'
   | 'custom_views'
@@ -46,25 +37,14 @@ function isValidAction(v: unknown): v is ScorchPadAction {
   return typeof v === 'string' && VALID_ACTIONS.has(v as ScorchPadAction);
 }
 
-// ── Handler ───────────────────────────────────────────────────────────────────
-
 export async function POST(request: Request): Promise<Response> {
-  // ── 1. Parse body ──────────────────────────────────────────────────────────
   let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json(
-      { error: 'Invalid JSON body', code: 'ERR_INVALID_BODY' },
-      { status: 400 }
-    );
+  try { body = await request.json(); } catch {
+    return Response.json({ error: 'Invalid JSON body', code: 'ERR_INVALID_BODY' }, { status: 400 });
   }
 
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return Response.json(
-      { error: 'Body must be an object', code: 'ERR_INVALID_BODY' },
-      { status: 400 }
-    );
+    return Response.json({ error: 'Body must be an object', code: 'ERR_INVALID_BODY' }, { status: 400 });
   }
 
   const raw    = body as Record<string, unknown>;
@@ -77,7 +57,6 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // ── 2. Derive tier from JWT claims ─────────────────────────────────────────
   const { userId, sessionClaims } = await auth();
   const tierInfo = deriveTierFromClaims(
     userId ?? null,
@@ -85,17 +64,16 @@ export async function POST(request: Request): Promise<Response> {
   );
   const { tier, planType } = tierInfo;
   const limits = getLimits(tier, planType);
-
   const upgradeUrl = getUpgradeUrl();
 
-  // ── 3. Check gate for the requested action ─────────────────────────────────
   switch (action) {
     case 'password_protection':
       if (!limits.allowPassword) {
         return Response.json({
           allowed:    false,
-          reason:     'Password protection requires a free account. Sign up to enable it.',
-          upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/sign-up`,
+          // FIXED: was "requires a free account" — password is Pro-only per spec
+          reason:     'Password protection requires a Pro subscription.',
+          upgradeUrl,
         });
       }
       return Response.json({ allowed: true });
@@ -128,7 +106,7 @@ export async function POST(request: Request): Promise<Response> {
           allowed:    false,
           reason:     tier === 'anonymous'
                         ? 'Extended expiry requires a free account or higher.'
-                        : 'Extended expiry beyond 30 days requires a Pro subscription.',
+                        : 'Extended expiry beyond 24 hours requires a Pro subscription.',
           upgradeUrl,
         });
       }
@@ -138,22 +116,16 @@ export async function POST(request: Request): Promise<Response> {
       if (!limits.allowLargePaste) {
         return Response.json({
           allowed:    false,
-          reason:     tier === 'anonymous' || tier === 'free'
-                        ? 'Pastes over 500 KB require a Pro subscription.'
-                        : 'Large paste is not available on your current plan.',
+          reason:     'Pastes over 50 KB require a Pro subscription.',
           upgradeUrl,
         });
       }
       return Response.json({ allowed: true });
 
     default: {
-      // TypeScript exhaustiveness check — this branch is unreachable.
       const _: never = action;
       void _;
-      return Response.json(
-        { error: 'Unhandled action', code: 'ERR_UNHANDLED_ACTION' },
-        { status: 500 }
-      );
+      return Response.json({ error: 'Unhandled action', code: 'ERR_UNHANDLED_ACTION' }, { status: 500 });
     }
   }
 }

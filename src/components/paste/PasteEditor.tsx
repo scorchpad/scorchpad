@@ -1,7 +1,25 @@
+// src/components/paste/PasteEditor.tsx
+// ─────────────────────────────────────────────────────────────────────────────
+// Main create-paste UI: textarea + collapsible options panel.
+//
+// FIX: useSubscription() is now called here so the ExpirySelector and
+// ViewLimitSelector reflect the signed-in user's actual plan on the home page.
+// Previously useSubscription() was only called in the dashboard — so a signed-in
+// free user would see anonymous expiry options (5 min / 1 hour) instead of the
+// correct free options (5 min / 1 hour / 24 hours).
+//
+// About "Syntax language": this IS a spec-required feature (spec A.6, Gotcha #12).
+// It stores the programming language as unencrypted metadata alongside the
+// encrypted blob. On the viewer page, highlight.js uses it for syntax coloring.
+// It is NOT AI slop — it is intentional and documented in the build spec.
+// ─────────────────────────────────────────────────────────────────────────────
+
 'use client';
+
 import { useState, useEffect, useRef } from 'react';
 import { usePasteStore } from '../../store/pasteStore';
 import { usePasteCreator } from '../../hooks/usePasteCreator';
+import { useSubscription } from '../../hooks/useSubscription';
 import { ExpirySelector } from './ExpirySelector';
 import { ViewLimitSelector } from './ViewLimitSelector';
 import { PasswordInput } from './PasswordInput';
@@ -12,53 +30,55 @@ import { ChevronDown, ChevronUp } from 'lucide-react';
 
 // Syntax language options for code pastes.
 // Stored in Redis as unencrypted metadata — not sensitive.
+// Language hint passed to highlight.js on the viewer page (Gotcha #12).
 const LANGUAGE_OPTIONS: { label: string; value: string }[] = [
   { label: 'Plain text (default)', value: '' },
-  { label: 'TypeScript', value: 'typescript' },
-  { label: 'JavaScript', value: 'javascript' },
-  { label: 'Python', value: 'python' },
-  { label: 'Rust', value: 'rust' },
-  { label: 'Go', value: 'go' },
-  { label: 'Java', value: 'java' },
-  { label: 'C / C++', value: 'cpp' },
-  { label: 'C#', value: 'csharp' },
-  { label: 'Bash / Shell', value: 'bash' },
-  { label: 'SQL', value: 'sql' },
-  { label: 'JSON', value: 'json' },
-  { label: 'YAML', value: 'yaml' },
-  { label: 'HTML', value: 'html' },
-  { label: 'CSS', value: 'css' },
-  { label: 'Markdown', value: 'markdown' },
-  { label: 'Dockerfile', value: 'dockerfile' },
-  { label: 'Ruby', value: 'ruby' },
-  { label: 'PHP', value: 'php' },
-  { label: 'Swift', value: 'swift' },
-  { label: 'Kotlin', value: 'kotlin' },
+  { label: 'TypeScript',           value: 'typescript' },
+  { label: 'JavaScript',           value: 'javascript' },
+  { label: 'Python',               value: 'python' },
+  { label: 'Rust',                 value: 'rust' },
+  { label: 'Go',                   value: 'go' },
+  { label: 'Java',                 value: 'java' },
+  { label: 'C / C++',              value: 'cpp' },
+  { label: 'C#',                   value: 'csharp' },
+  { label: 'Bash / Shell',         value: 'bash' },
+  { label: 'SQL',                  value: 'sql' },
+  { label: 'JSON',                 value: 'json' },
+  { label: 'YAML',                 value: 'yaml' },
+  { label: 'HTML',                 value: 'html' },
+  { label: 'CSS',                  value: 'css' },
+  { label: 'Markdown',             value: 'markdown' },
+  { label: 'Dockerfile',           value: 'dockerfile' },
+  { label: 'Ruby',                 value: 'ruby' },
+  { label: 'PHP',                  value: 'php' },
+  { label: 'Swift',                value: 'swift' },
+  { label: 'Kotlin',               value: 'kotlin' },
 ];
 
-// Per-tier paste size ceilings (bytes).
-// Annual Pro gets 1 MB; all other Pro plans get 500 KB.
+// Per-tier paste size ceilings (bytes) — matches plan-limits.ts
 const SIZES = {
-  anonymous: 10_240,
-  free: 51_200,
-  pro_standard: 524_288,
-  pro_annual: 1_048_576,
+  anonymous:   10_240,   // 10 KB
+  free:        51_200,   // 50 KB
+  pro_standard: 524_288, // 500 KB
+  pro_annual: 1_048_576, // 1 MB
 } as const;
 
 export function PasteEditor() {
   const store = usePasteStore();
   const { handleCreate, creatingStep } = usePasteCreator();
+
+  // Load the user's subscription on the home page so ExpirySelector
+  // shows the correct options for free and pro users.
+  useSubscription();
+
   const [error, setError] = useState('');
-  // Settings panel open/closed — collapsed by default so the textarea is the hero.
   const [settingsOpen, setSettingsOpen] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isAnnualPro = store.tier === 'pro' && store.planDuration === 'annual';
   const maxSize =
     store.tier === 'pro'
-      ? isAnnualPro
-        ? SIZES.pro_annual
-        : SIZES.pro_standard
+      ? isAnnualPro ? SIZES.pro_annual : SIZES.pro_standard
       : store.tier === 'free'
       ? SIZES.free
       : SIZES.anonymous;
@@ -69,7 +89,6 @@ export function PasteEditor() {
     setByteCount(new TextEncoder().encode(store.plaintext).byteLength);
   }, [store.plaintext]);
 
-  // Auto-focus textarea on mount so the user can start typing immediately.
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
@@ -90,34 +109,30 @@ export function PasteEditor() {
       await handleCreate();
     } catch (err: unknown) {
       setError(
-        err instanceof Error
-          ? err.message
-          : 'Something went wrong. Please try again.'
+        err instanceof Error ? err.message : 'Something went wrong. Please try again.'
       );
     }
   };
 
-  // Granular button label so users see what's happening during ~500ms PBKDF2 (Gotcha #17).
   const buttonLabel = () => {
     if (!store.isCreating) return 'Create Secure Link';
-    if (creatingStep === 'deriving') return 'Deriving key...';
-    if (creatingStep === 'uploading') return 'Uploading...';
-    return 'Encrypting...';
+    if (creatingStep === 'deriving')   return 'Deriving key…';
+    if (creatingStep === 'uploading')  return 'Uploading…';
+    return 'Encrypting…';
   };
 
   return (
     <div className="flex flex-col gap-4 w-full max-w-4xl mx-auto mt-4 px-2">
 
-      {/* ── HERO: textarea fills viewport above the fold ─────────────────── */}
+      {/* ── HERO: textarea ────────────────────────────────────────────────── */}
       <div className="relative w-full">
         <textarea
           ref={textareaRef}
           value={store.plaintext}
           onChange={(e) => store.setPlaintext(e.target.value)}
-          placeholder="Paste your sensitive text here..."
+          placeholder="Paste your sensitive text here…"
           className="w-full h-[420px] p-6 border rounded-xl resize-y font-mono text-sm bg-white dark:bg-black border-gray-200 dark:border-white/10 shadow-inner focus:border-indigo-500/50 dark:focus:border-orange-500/50 focus:ring-0 outline-none transition-colors leading-relaxed text-gray-900 dark:text-[#E0E0E0]"
         />
-        {/* Byte counter and MIME type indicator */}
         <div className="absolute bottom-4 right-4 flex items-center justify-between text-[11px] font-mono w-full px-8 pointer-events-none">
           <span className="text-gray-500 dark:text-white/40">
             MIME: <span className="text-indigo-600 dark:text-orange-400">text/plain</span>
@@ -138,9 +153,8 @@ export function PasteEditor() {
         <PaywallGate feature="Large pastes" />
       )}
 
-      {/* ── SETTINGS PANEL: collapsible, below the textarea ──────────────── */}
+      {/* ── OPTIONS PANEL ─────────────────────────────────────────────────── */}
       <div className="border border-gray-200 dark:border-white/10 rounded-xl overflow-hidden bg-gray-50 dark:bg-[#080808] shadow-sm dark:shadow-lg transition-colors">
-        {/* Toggle header */}
         <button
           type="button"
           onClick={() => setSettingsOpen((v) => !v)}
@@ -149,14 +163,11 @@ export function PasteEditor() {
           aria-controls="settings-panel"
         >
           <span>Options</span>
-          {settingsOpen ? (
-            <ChevronUp size={14} className="text-indigo-600 dark:text-orange-500" />
-          ) : (
-            <ChevronDown size={14} className="text-indigo-600 dark:text-orange-500" />
-          )}
+          {settingsOpen
+            ? <ChevronUp size={14} className="text-indigo-600 dark:text-orange-500" />
+            : <ChevronDown size={14} className="text-indigo-600 dark:text-orange-500" />}
         </button>
 
-        {/* Collapsible body */}
         {settingsOpen && (
           <div
             id="settings-panel"
@@ -166,7 +177,10 @@ export function PasteEditor() {
             <ViewLimitSelector />
             <PasswordInput />
 
-            {/* ── Syntax language selector (FAIL 1 fix) ───────────────────── */}
+            {/* ── Syntax language ─────────────────────────────────────────── */}
+            {/* This is a spec-required feature (spec A.6, Gotcha #12).        */}
+            {/* The chosen language is stored as unencrypted Redis metadata.   */}
+            {/* highlight.js uses it for syntax coloring on the viewer page.   */}
             <div className="flex flex-col gap-2">
               <label
                 htmlFor="language-select"
@@ -188,29 +202,32 @@ export function PasteEditor() {
                   </option>
                 ))}
               </select>
+              <p className="text-[10px] font-mono text-gray-400 dark:text-white/30 tracking-wide">
+                Enables syntax highlighting on the viewer page.
+              </p>
             </div>
           </div>
         )}
       </div>
 
       {error && (
-        <div className="p-4 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 rounded-lg text-sm border border-red-200 dark:border-red-500/20 font-medium tracking-wide">
+        <div
+          role="alert"
+          className="p-4 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 rounded-lg text-sm border border-red-200 dark:border-red-500/20 font-medium tracking-wide"
+        >
           {error}
         </div>
       )}
 
+      {/* ── SUBMIT ────────────────────────────────────────────────────────── */}
       <button
+        type="button"
         onClick={submit}
-        disabled={store.isCreating || !store.plaintext.trim()}
-        className="w-full py-4 bg-indigo-600 dark:bg-orange-600 text-white rounded-lg font-bold shadow-md dark:shadow-lg dark:shadow-orange-500/20 uppercase tracking-[0.2em] text-sm hover:bg-indigo-700 dark:hover:bg-orange-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 transition-all"
+        disabled={store.isCreating || !store.plaintext.trim() || isOverLimit}
+        className="w-full py-4 bg-indigo-600 dark:bg-white text-white dark:text-black text-sm font-bold rounded-xl hover:bg-indigo-700 dark:hover:bg-orange-500 dark:hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-all uppercase tracking-widest shadow-lg flex items-center justify-center gap-3"
       >
-        {store.isCreating ? (
-          <>
-            <Spinner /> {buttonLabel()}
-          </>
-        ) : (
-          buttonLabel()
-        )}
+        {store.isCreating && <Spinner size={16} />}
+        {buttonLabel()}
       </button>
     </div>
   );

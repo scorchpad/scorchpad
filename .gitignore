@@ -24,9 +24,20 @@ next-env.d.ts
 
 # sentry
 .sentryclirc
+
 # Visual Studio
 .vs/
 
 # Windows artifacts
 desktop.ini
 Thumbs.db
+
+# ── CRYPTOGRAPHIC KEYS — NEVER COMMIT ─────────────────────────────────────────
+# Private PGP / GPG keys must NEVER be placed in /public or committed to git.
+# The PUBLIC key (/public/pgp-key.txt) is safe to commit.
+# The PRIVATE key must be stored in a password manager or secrets vault.
+public/PRIVATE-KEY-KEEP-SECRET*
+public/PRIVATE-KEY*
+public/*private*
+*.private.key
+*.secret.key
