@@ -39,6 +39,12 @@ const isPublicRoute = createRouteMatcher([
   '/api/csp-report',
   '/api/webhooks/(.*)',
   '/api/health',
+  // ── User API routes that handle anonymous access internally ───────────────
+  // These routes check auth() themselves and return tier-appropriate data for
+  // unauthenticated callers. They MUST be public here or Clerk v7 returns 404
+  // before the route handler runs — anonymous users can never get their limits.
+  '/api/user/subscription',
+  '/api/user/action-check',
   // ── Static public files in /public ───────────────────────────────────────
   // Next.js middleware runs BEFORE the static file server, so we must
   // explicitly list these or unauthenticated requests get redirected to /sign-in.
@@ -80,7 +86,11 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
     "frame-ancestors 'none'",
     "connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev wss://*.clerk.accounts.dev https://*.upstash.io https://o4511466116153344.ingest.us.sentry.io",
     "frame-src https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev",
-    "worker-src 'self'",
+    // blob: is required for Clerk v7 — it spawns Web Workers from blob: URLs for
+    // token refresh and session management. Without blob: every page load produces
+    // 3–6 CSP violations and Clerk's background workers are silently terminated,
+    // which causes stale auth state and broken session refresh.
+    "worker-src 'self' blob:",
     "upgrade-insecure-requests",
     "report-uri /api/csp-report",
   ].join('; ');
