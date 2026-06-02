@@ -1,25 +1,35 @@
 // src/components/paste/PasteEditor.tsx
-// ─────────────────────────────────────────────────────────────────────────────
 // Main create-paste UI: textarea + collapsible options panel.
 //
-// FIX: useSubscription() is now called here so the ExpirySelector and
-// ViewLimitSelector reflect the signed-in user's actual plan on the home page.
-// Previously useSubscription() was only called in the dashboard — so a signed-in
-// free user would see anonymous expiry options (5 min / 1 hour) instead of the
-// correct free options (5 min / 1 hour / 24 hours).
+// CHANGELOG (this version):
+//   FIX: Error state changed from `string` to `React.ReactNode` so the
+//   error banner can render inline JSX (sign-in / upgrade links).
 //
-// About "Syntax language": this IS a spec-required feature (spec A.6, Gotcha #12).
-// It stores the programming language as unencrypted metadata alongside the
-// encrypted blob. On the viewer page, highlight.js uses it for syntax coloring.
-// It is NOT AI slop — it is intentional and documented in the build spec.
-// ─────────────────────────────────────────────────────────────────────────────
+//   FIX: submit() now narrows ApiError by .status and renders:
+//     429 → server message + human retry countdown + CTA:
+//           anonymous  → "Sign in" link (10/day)
+//           free       → "Upgrade to Pro" link (50+/day)
+//           pro        → "retry in X min" only
+//     403 → server message + "Upgrade to Pro →" link when upgradeUrl present
+//     other ApiError → server message (body.error, not "API error {status}")
+//
+//   WHY REACT.NODE: The sign-in / upgrade CTAs must be tappable links,
+//   not plain text. A single `string` state cannot hold JSX. Changing to
+//   ReactNode allows the banner to render both text and anchor elements
+//   without adding a second state variable or a separate "action" state.
+//
+// About "Syntax language": this IS a spec-required feature (spec A.6,
+// Gotcha #12). It stores the programming language as unencrypted metadata
+// alongside the encrypted blob. On the viewer page, highlight.js uses it
+// for syntax coloring. It is NOT AI slop — it is intentional and documented.
 
 'use client';
-
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
+import Link from 'next/link';
 import { usePasteStore } from '../../store/pasteStore';
 import { usePasteCreator } from '../../hooks/usePasteCreator';
 import { useSubscription } from '../../hooks/useSubscription';
+import { ApiError } from '../../mocks/api.mock';
 import { ExpirySelector } from './ExpirySelector';
 import { ViewLimitSelector } from './ViewLimitSelector';
 import { PasswordInput } from './PasswordInput';
@@ -57,11 +67,137 @@ const LANGUAGE_OPTIONS: { label: string; value: string }[] = [
 
 // Per-tier paste size ceilings (bytes) — matches plan-limits.ts
 const SIZES = {
-  anonymous:   10_240,   // 10 KB
-  free:        51_200,   // 50 KB
-  pro_standard: 524_288, // 500 KB
-  pro_annual: 1_048_576, // 1 MB
+  anonymous:    10_240,   // 10 KB
+  free:         51_200,   // 50 KB
+  pro_standard: 524_288,  // 500 KB
+  pro_annual:   1_048_576, // 1 MB
 } as const;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Formats seconds into a short human-readable string: "2 min", "3 hr", etc. */
+function formatRetryDelay(seconds: number): string {
+  if (seconds < 60) return `${seconds} sec`;
+  const mins = Math.ceil(seconds / 60);
+  if (mins < 60) return `${mins} min`;
+  const hrs = Math.ceil(mins / 60);
+  return `${hrs} hr`;
+}
+
+/**
+ * Maps an ApiError thrown by createPaste() to a ReactNode for the error banner.
+ *
+ * 429 RATE LIMIT:
+ *   The server's `body.error` is now the actual message (e.g. "Daily paste
+ *   limit reached.") instead of "API error 429". We append a retry countdown
+ *   from ApiError.retryAfter, and an inline CTA link:
+ *     anonymous → /sign-up  (free tier = 10/day)
+ *     free      → /pricing  (Pro = 50+/day)
+ *     pro       → no link, just the retry time
+ *
+ * 403 FEATURE GATE:
+ *   The server already returns a human-readable message for each gate
+ *   (e.g. "Password protection requires a Pro subscription."). We append
+ *   an "Upgrade to Pro →" link when ApiError.upgradeUrl is present.
+ *
+ * OTHER:
+ *   Use the server's message if available (ApiError.message has body.error
+ *   since the api.mock.ts fix). Fall back to a generic message.
+ */
+function buildErrorNode(
+  err: unknown,
+  tier: 'anonymous' | 'free' | 'pro',
+): ReactNode {
+  if (!(err instanceof ApiError)) {
+    return err instanceof Error
+      ? err.message
+      : 'Something went wrong. Please try again.';
+  }
+
+  switch (err.status) {
+    case 429: {
+      // ── Rate limit hit ──────────────────────────────────────────────────
+      const retryText = err.retryAfter
+        ? `Try again in ~${formatRetryDelay(err.retryAfter)}.`
+        : 'Please wait before trying again.';
+
+      if (tier === 'anonymous') {
+        // Anonymous → nudge to sign up (10 free pastes/day)
+        const ctaHref = err.signUpUrl ?? '/sign-up';
+        return (
+          <>
+            {err.message} {retryText}{' '}
+            <Link
+              href={ctaHref}
+              className="underline font-bold hover:opacity-80 transition-opacity"
+            >
+              Sign in
+            </Link>
+            {' '}for 10 free pastes/day.
+          </>
+        );
+      }
+
+      if (tier === 'free') {
+        // Free → nudge to upgrade (50+/day Pro)
+        const ctaHref = err.upgradeUrl ?? '/pricing';
+        return (
+          <>
+            {err.message} {retryText}{' '}
+            <Link
+              href={ctaHref}
+              className="underline font-bold hover:opacity-80 transition-opacity"
+            >
+              Upgrade to Pro
+            </Link>
+            {' '}for 50+ pastes/day.
+          </>
+        );
+      }
+
+      // Pro → they've hit their plan cap; just show retry time
+      return <>{err.message} {retryText}</>;
+    }
+
+    case 403: {
+      // ── Tier feature gate ───────────────────────────────────────────────
+      if (err.upgradeUrl) {
+        return (
+          <>
+            {err.message}{' '}
+            <Link
+              href={err.upgradeUrl}
+              className="underline font-bold hover:opacity-80 transition-opacity"
+            >
+              Upgrade to Pro →
+            </Link>
+          </>
+        );
+      }
+      // upgradeUrl may be absent (e.g. anon burn-after-reading gate has signUpUrl)
+      if (err.signUpUrl) {
+        return (
+          <>
+            {err.message}{' '}
+            <Link
+              href={err.signUpUrl}
+              className="underline font-bold hover:opacity-80 transition-opacity"
+            >
+              Sign up →
+            </Link>
+          </>
+        );
+      }
+      return <>{err.message}</>;
+    }
+
+    default:
+      // Any other ApiError (400, 413, 5xx …): show the server message.
+      return <>{err.message}</>;
+  }
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export function PasteEditor() {
   const store = usePasteStore();
@@ -71,7 +207,9 @@ export function PasteEditor() {
   // shows the correct options for free and pro users.
   useSubscription();
 
-  const [error, setError] = useState('');
+  // ReactNode (not string) so the error banner can render inline links.
+  // null = no error; rendered conditionally below.
+  const [error, setError] = useState<ReactNode>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -100,31 +238,32 @@ export function PasteEditor() {
   const isOverLimit = byteCount > maxSize;
 
   const submit = async () => {
-    setError('');
+    setError(null);
+
     if (isOverLimit) {
       setError('Paste exceeds the size limit for your plan.');
       return;
     }
+
     try {
       await handleCreate();
     } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : 'Something went wrong. Please try again.'
-      );
+      // buildErrorNode maps ApiError subtypes to contextual messages with CTA links.
+      // For non-ApiError instances (e.g. crypto failures), it falls back to err.message.
+      setError(buildErrorNode(err, store.tier));
     }
   };
 
   const buttonLabel = () => {
     if (!store.isCreating) return 'Create Secure Link';
-    if (creatingStep === 'deriving')   return 'Deriving key…';
-    if (creatingStep === 'uploading')  return 'Uploading…';
+    if (creatingStep === 'deriving')  return 'Deriving key…';
+    if (creatingStep === 'uploading') return 'Uploading…';
     return 'Encrypting…';
   };
 
   return (
     <div className="flex flex-col gap-4 w-full max-w-4xl mx-auto mt-4 px-2">
-
-      {/* ── HERO: textarea ────────────────────────────────────────────────── */}
+      {/* ── HERO: textarea ── */}
       <div className="relative w-full">
         <textarea
           ref={textareaRef}
@@ -153,7 +292,7 @@ export function PasteEditor() {
         <PaywallGate feature="Large pastes" />
       )}
 
-      {/* ── OPTIONS PANEL ─────────────────────────────────────────────────── */}
+      {/* ── OPTIONS PANEL ── */}
       <div className="border border-gray-200 dark:border-white/10 rounded-xl overflow-hidden bg-gray-50 dark:bg-[#080808] shadow-sm dark:shadow-lg transition-colors">
         <button
           type="button"
@@ -164,7 +303,7 @@ export function PasteEditor() {
         >
           <span>Options</span>
           {settingsOpen
-            ? <ChevronUp size={14} className="text-indigo-600 dark:text-orange-500" />
+            ? <ChevronUp   size={14} className="text-indigo-600 dark:text-orange-500" />
             : <ChevronDown size={14} className="text-indigo-600 dark:text-orange-500" />}
         </button>
 
@@ -177,10 +316,7 @@ export function PasteEditor() {
             <ViewLimitSelector />
             <PasswordInput />
 
-            {/* ── Syntax language ─────────────────────────────────────────── */}
-            {/* This is a spec-required feature (spec A.6, Gotcha #12).        */}
-            {/* The chosen language is stored as unencrypted Redis metadata.   */}
-            {/* highlight.js uses it for syntax coloring on the viewer page.   */}
+            {/* Syntax language — spec A.6, Gotcha #12 */}
             <div className="flex flex-col gap-2">
               <label
                 htmlFor="language-select"
@@ -210,7 +346,8 @@ export function PasteEditor() {
         )}
       </div>
 
-      {error && (
+      {/* ── ERROR BANNER ── */}
+      {error !== null && (
         <div
           role="alert"
           className="p-4 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 rounded-lg text-sm border border-red-200 dark:border-red-500/20 font-medium tracking-wide"
@@ -219,7 +356,7 @@ export function PasteEditor() {
         </div>
       )}
 
-      {/* ── SUBMIT ────────────────────────────────────────────────────────── */}
+      {/* ── SUBMIT ── */}
       <button
         type="button"
         onClick={submit}

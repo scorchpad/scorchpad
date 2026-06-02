@@ -9,18 +9,25 @@
 //   • passwordProof is a one-way rate-limiting token, not the decryption key.
 //   • Raw IP is never stored — hashIp() before any write.
 //
-// VIEW-COUNT GATE SEMANTICS (FIXED):
-//   OLD (broken): blocked ALL maxViews > 1 for non-Pro, which rejected free
-//     users' valid preset choices of 5 and 10 views.
-//   NEW (correct per spec A.7):
-//     anonymous   → maxViews MUST equal 1 (burn-after-reading only)
-//     free        → maxViews 1–10 allowed (covers presets 1/5/10)
-//     pro:*       → maxViews 1–9999 allowed (custom input)
-//     pro:annual  → maxViews 0 (unlimited) also allowed
+// VIEW-COUNT GATE SEMANTICS:
+//   anonymous   → maxViews MUST equal 1 (burn-after-reading only)
+//   free        → maxViews 1–10 allowed (covers presets 1/5/10)
+//   pro:*       → maxViews 1–9999 allowed (custom input)
+//   pro:annual  → maxViews 0 (unlimited) also allowed
 //
-// PASSWORD GATE MESSAGE (FIXED):
-//   Was: "requires a free account" — wrong, password is Pro-only per spec.
-//   Now: "requires a Pro subscription".
+// RATE LIMIT HEADERS ON SUCCESS:
+//   X-RateLimit-Limit     — the daily cap for this tier
+//   X-RateLimit-Remaining — pastes remaining in the current 24 h window
+//                           (after counting this request)
+//   X-RateLimit-Reset     — Unix timestamp ms when the window fully resets
+//
+//   These are also returned in the 201 response body as rateLimitRemaining /
+//   rateLimitReset so the Zustand store can update pastesRemainingToday
+//   immediately after a successful paste, without waiting for the next
+//   useSubscription() poll. See src/hooks/usePasteCreator.ts.
+//
+//   WHY HEADERS TOO: Monitoring tools and the future dashboard page can read
+//   them without parsing the body. Standard practice per IETF draft-ietf-httpapi-ratelimit.
 //
 // RUNTIME: Node.js (uses Prisma).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,14 +105,14 @@ export async function POST(request: Request): Promise<Response> {
   } catch {
     return Response.json(
       { error: 'Invalid JSON body', code: 'ERR_INVALID_BODY' },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
   if (!body || typeof body !== 'object') {
     return Response.json(
       { error: 'Body must be an object', code: 'ERR_INVALID_BODY' },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -123,7 +130,7 @@ export async function POST(request: Request): Promise<Response> {
   if (!isValidMaxViews(raw['maxViews'])) {
     return Response.json(
       { error: 'maxViews must be an integer from 0–9999', code: 'ERR_INVALID_VIEWS' },
-      { status: 400 }
+      { status: 400 },
     );
   }
   if (typeof raw['hasPassword'] !== 'boolean') {
@@ -168,9 +175,18 @@ export async function POST(request: Request): Promise<Response> {
   const ipHash = await hashIp(rawIp);
   const rateLimiter = getPasteRatelimiter(tier, planType);
   const rateLimitKey = getPasteRatelimitKey(tier, userId ?? null, ipHash);
-  const { success: rateLimitPassed, reset } = await rateLimiter.limit(rateLimitKey);
+
+  // Destructure `remaining` and `limit` for X-RateLimit-* headers on success
+  // and for rateLimitRemaining in the 201 response body.
+  // `remaining` is the count remaining AFTER this request is counted.
+  const { success: rateLimitPassed, reset, remaining, limit } = await rateLimiter.limit(rateLimitKey);
+
   if (!rateLimitPassed) {
-    return rateLimitedResponse(reset);
+    // Pass tier so rateLimitedResponse can return a contextual hint:
+    //   anonymous → signUpUrl + "get 10/day" message
+    //   free      → upgradeUrl + "50+/day Pro" message
+    //   pro       → generic "plan limit reached"
+    return rateLimitedResponse(reset, tier);
   }
 
   // ── 4. Feature gates ───────────────────────────────────────────────────────
@@ -180,11 +196,11 @@ export async function POST(request: Request): Promise<Response> {
   if (parsedBody.hasPassword && !limits.allowPassword) {
     return Response.json(
       {
-        error: 'Password protection requires a Pro subscription',
+        error: 'Password protection requires a Pro subscription.',
         code:  'ERR_TIER_REQUIRED',
         upgradeUrl,
       },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
@@ -192,24 +208,24 @@ export async function POST(request: Request): Promise<Response> {
   if (tier === 'anonymous' && parsedBody.maxViews !== 1) {
     return Response.json(
       {
-        error:      'Anonymous pastes are burn-after-reading (maxViews must be 1)',
+        error:      'Anonymous pastes are burn-after-reading (maxViews must be 1).',
         code:       'ERR_TIER_REQUIRED',
-        upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/sign-up`,
+        signUpUrl:  `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/sign-up`,
       },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
   // Non-unlimited-plan: maxViews must not exceed the tier ceiling
-  // limits.maxViews=0 means unlimited (pro:annual) — skip the ceiling check for that plan
+  // limits.maxViews=0 means unlimited (pro:annual) — skip the ceiling check
   if (limits.maxViews > 0 && parsedBody.maxViews > limits.maxViews) {
     return Response.json(
       {
-        error:      `View count exceeds your plan maximum of ${limits.maxViews}`,
+        error:      `View count exceeds your plan maximum of ${limits.maxViews}.`,
         code:       'ERR_TIER_REQUIRED',
         upgradeUrl,
       },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
@@ -217,11 +233,11 @@ export async function POST(request: Request): Promise<Response> {
   if (parsedBody.maxViews === 0 && !limits.allowUnlimitedViews) {
     return Response.json(
       {
-        error:      'Unlimited views require an Annual Pro subscription',
+        error:      'Unlimited views require an Annual Pro subscription.',
         code:       'ERR_TIER_REQUIRED',
         upgradeUrl: `${upgradeUrl}#annual`,
       },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
@@ -230,11 +246,11 @@ export async function POST(request: Request): Promise<Response> {
   if (parsedBody.maxViews > 10 && !limits.allowCustomViews) {
     return Response.json(
       {
-        error:      'Custom view counts require a Pro subscription',
+        error:      'Custom view counts require a Pro subscription.',
         code:       'ERR_TIER_REQUIRED',
         upgradeUrl,
       },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
@@ -242,10 +258,10 @@ export async function POST(request: Request): Promise<Response> {
   if (parsedBody.expirySeconds > limits.maxExpirySeconds) {
     return Response.json(
       {
-        error: `Expiry exceeds your plan maximum of ${limits.maxExpirySeconds} seconds`,
+        error: `Expiry exceeds your plan maximum of ${limits.maxExpirySeconds} seconds.`,
         code:  'ERR_EXPIRY_EXCEEDED',
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -253,18 +269,18 @@ export async function POST(request: Request): Promise<Response> {
   if (parsedBody.sizeBytes > limits.maxPlaintextBytes) {
     return Response.json(
       {
-        error: `Paste size exceeds your plan limit of ${limits.maxPlaintextBytes} bytes`,
+        error: `Paste size exceeds your plan limit of ${limits.maxPlaintextBytes} bytes.`,
         code:  'ERR_SIZE_EXCEEDED',
       },
-      { status: 413 }
+      { status: 413 },
     );
   }
   // Belt-and-suspenders: also validate the actual ciphertext length
   const maxCiphertextBytes = limits.maxPlaintextBytes * 1.4 + 100;
   if (parsedBody.encryptedBlob.length > maxCiphertextBytes) {
     return Response.json(
-      { error: 'Encrypted blob exceeds permitted size for your plan', code: 'ERR_SIZE_EXCEEDED' },
-      { status: 413 }
+      { error: 'Encrypted blob exceeds permitted size for your plan.', code: 'ERR_SIZE_EXCEEDED' },
+      { status: 413 },
     );
   }
 
@@ -306,9 +322,29 @@ export async function POST(request: Request): Promise<Response> {
     console.error('[scorchpad] PasteLog write failed:', err instanceof Error ? err.message : 'unknown');
   });
 
-  // ── 8. Return paste ID ─────────────────────────────────────────────────────
-  return Response.json({ id }, {
-    status: 201,
-    headers: { 'Cache-Control': 'no-store' },
-  });
+  // ── 8. Return paste ID + rate limit info ───────────────────────────────────
+  //
+  // rateLimitRemaining and rateLimitReset are included in the body so
+  // usePasteCreator can call store.setPastesRemainingToday() immediately after
+  // a successful paste, giving the user instant feedback ("2 pastes left today")
+  // without waiting for the next useSubscription() poll.
+  //
+  // They are ALSO in the response headers (X-RateLimit-*) for monitoring tools
+  // and future dashboard use.
+  return Response.json(
+    {
+      id,
+      rateLimitRemaining: Math.max(0, remaining),
+      rateLimitReset:     reset,
+    },
+    {
+      status: 201,
+      headers: {
+        'Cache-Control':        'no-store',
+        'X-RateLimit-Limit':    String(limit),
+        'X-RateLimit-Remaining': String(Math.max(0, remaining)),
+        'X-RateLimit-Reset':    String(reset),
+      },
+    },
+  );
 }

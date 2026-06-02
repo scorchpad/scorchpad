@@ -2,17 +2,29 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Rate limiters for ScorchPad API routes.
 //
-// WHY SLIDING WINDOW: Unlike fixed windows, sliding windows don't allow bursting
-// at window boundaries (e.g. 10 req in the last second of window 1 + 10 in the
-// first second of window 2 = 20 req/s despite a 10/window limit).
+// WHY SLIDING WINDOW: Unlike fixed windows, sliding windows don't allow
+// bursting at window boundaries (e.g. 10 req in the last second of window 1
+// + 10 in the first second of window 2 = 20 req/s despite a 10/window
+// limit).
 //
 // KEY DESIGN:
-// - All limiters share the `rl:pv:` prefix namespace, isolating ScorchPad from
-//   any other service sharing this Upstash instance.
+// - All limiters share the `rl:pv:` prefix namespace, isolating ScorchPad
+//   from any other service sharing this Upstash instance.
 // - Paste creation limiter bucket is chosen per planType, not just isPro.
 //   Monthly Pro (50/day) ≠ Annual Pro (unlimited). See Gotcha #16.
 // - Rate limit keys are keyed by hashed IP (anon) or userId (authenticated).
 //   Raw IPs never appear in any Redis key — see lib/ip.ts.
+//
+// CHANGELOG (this version):
+//   FIX: rateLimitedResponse() now accepts an optional tier parameter and
+//   returns a tier-aware body:
+//     anonymous → includes signUpUrl (/sign-up) and a "sign up for 10/day" hint
+//     free      → includes upgradeUrl (/pricing) and a "upgrade for 50+/day" hint
+//     pro       → generic "try again" message (they just exceeded their plan cap)
+//
+//   The client reads signUpUrl / upgradeUrl from the error body and stores
+//   them on ApiError, enabling PasteEditor to render an actionable CTA link
+//   inside the error banner instead of a dead-end "API error 429" string.
 //
 // ALL RATE LIMIT RESPONSES must return 429 with Retry-After header.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,19 +131,19 @@ export const proApiLimit = new Ratelimit({
 
 /**
  * Selects the correct paste creation rate limiter based on the user's tier and plan.
- * Uses planType, not just isPro, because monthly/half-yr/annual have different daily caps.
- * See Gotcha #16 — isPro alone is insufficient for rate limit bucket selection.
+ * Uses planType, not just isPro, because monthly/half-yr/annual have different
+ * daily caps. See Gotcha #16 — isPro alone is insufficient.
  */
 export function getPasteRatelimiter(
   tier: 'anonymous' | 'free' | 'pro',
-  planType: string | null
+  planType: string | null,
 ): Ratelimit {
   if (tier === 'anonymous') return anonymousPasteLimit;
-  if (tier === 'free') return freePasteLimit;
+  if (tier === 'free')      return freePasteLimit;
   // Pro tier — select bucket by plan duration
-  if (planType === 'annual') return proAnnualPasteLimit;
+  if (planType === 'annual')      return proAnnualPasteLimit;
   if (planType === 'half-yearly') return proHalfYrPasteLimit;
-  return proMonthlyPasteLimit; // default Pro Monthly
+  return proMonthlyPasteLimit; // default: Pro Monthly
 }
 
 /**
@@ -142,23 +154,78 @@ export function getPasteRatelimiter(
 export function getPasteRatelimitKey(
   tier: 'anonymous' | 'free' | 'pro',
   userId: string | null,
-  ipHash: string
+  ipHash: string,
 ): string {
   if (tier === 'anonymous' || !userId) return ipHash;
   return userId;
 }
 
 /**
- * Returns a 429 Response with Retry-After header.
- * All rate-limited responses MUST use this to stay consistent.
+ * Returns a 429 Response with Retry-After header and a tier-aware body.
+ *
+ * WHY TIER-AWARE:
+ *   Anonymous users hit 3/day and should be nudged to sign up (10/day).
+ *   Free users hit 10/day and should be nudged to upgrade (50+/day).
+ *   Pro users just exhausted their plan — tell them when the window resets.
+ *
+ *   The client reads signUpUrl / upgradeUrl from the body and adds them to
+ *   ApiError, allowing PasteEditor to render an actionable CTA link inside
+ *   the error banner. See src/mocks/api.mock.ts — apiFetch().
+ *
+ * BACKWARD COMPATIBILITY:
+ *   The `tier` parameter is optional and defaults to 'anonymous' so existing
+ *   callers (read/password-verify routes) don't need to change their call sites.
  */
-export function rateLimitedResponse(reset: number): Response {
+export function rateLimitedResponse(
+  reset: number,
+  tier: 'anonymous' | 'free' | 'pro' = 'anonymous',
+): Response {
   const retryAfterSeconds = Math.ceil((reset - Date.now()) / 1000);
-  return Response.json(
-    { error: 'Too many requests. Please slow down.', code: 'ERR_RATE_LIMITED' },
-    {
-      status: 429,
-      headers: { 'Retry-After': String(Math.max(1, retryAfterSeconds)) },
-    }
-  );
+
+  // ── Tier-aware response body ───────────────────────────────────────────────
+  type RateLimitBody = {
+    error: string;
+    code: string;
+    hint?: string;
+    signUpUrl?: string;
+    upgradeUrl?: string;
+  };
+
+  let body: RateLimitBody;
+
+  switch (tier) {
+    case 'anonymous':
+      body = {
+        error: 'Daily paste limit reached.',
+        code:  'ERR_RATE_LIMITED',
+        hint:  'Sign up for a free account to get 10 pastes per day.',
+        signUpUrl: '/sign-up',
+      };
+      break;
+
+    case 'free':
+      body = {
+        error: 'Daily paste limit reached.',
+        code:  'ERR_RATE_LIMITED',
+        hint:  'Upgrade to ScorchPad Pro for up to 50 pastes per day.',
+        upgradeUrl: '/pricing',
+      };
+      break;
+
+    case 'pro':
+    default:
+      body = {
+        error: 'Daily paste limit reached for your plan.',
+        code:  'ERR_RATE_LIMITED',
+      };
+      break;
+  }
+
+  return Response.json(body, {
+    status: 429,
+    headers: {
+      'Retry-After':    String(Math.max(1, retryAfterSeconds)),
+      'Cache-Control':  'no-store',
+    },
+  });
 }
