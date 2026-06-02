@@ -76,7 +76,11 @@ function isPrivateKeyPath(pathname: string): boolean {
 function addSecurityHeaders(response: NextResponse): NextResponse {
   const csp = [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev",
+    // FIX: Added https://challenges.cloudflare.com to script-src, frame-src, connect-src.
+    // Clerk uses Cloudflare Turnstile for bot protection on every sign-in/sign-up page.
+    // Turnstile loads an iframe + scripts from challenges.cloudflare.com.
+    // Without this, browser blocks those resources → "The CAPTCHA failed to load".
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev https://challenges.cloudflare.com",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' blob: data: https:",
     "font-src 'self' data:",
@@ -84,8 +88,8 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
     "base-uri 'self'",
     "form-action 'self' https://checkout.razorpay.com https://*.lemonsqueezy.com",
     "frame-ancestors 'none'",
-    "connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev wss://*.clerk.accounts.dev https://*.upstash.io https://o4511466116153344.ingest.us.sentry.io",
-    "frame-src https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev",
+    "connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev wss://*.clerk.accounts.dev https://*.upstash.io https://o4511466116153344.ingest.us.sentry.io https://challenges.cloudflare.com",
+    "frame-src https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev https://challenges.cloudflare.com",
     // blob: is required for Clerk v7 — it spawns Web Workers from blob: URLs for
     // token refresh and session management. Without blob: every page load produces
     // 3–6 CSP violations and Clerk's background workers are silently terminated,
