@@ -3,17 +3,22 @@
 // POST /api/checkout
 // Creates a provider checkout session and returns the URL.
 //
-// ROUTING (FLAG 2 — half-yearly is global):
-//   X-Vercel-IP-Country: IN  →  Razorpay  (all three plans)
-//   All other countries      →  Lemon Squeezy (all three plans incl. half-yearly)
+// ROUTING:
+//   X-Vercel-IP-Country: IN  →  Razorpay       (monthly, half-yearly, annual)
+//   All other countries      →  Lemon Squeezy  (monthly, half-yearly, annual)
+//
+// Half-yearly is available globally via both providers.
+// Razorpay handles Indian users; Lemon Squeezy handles international users.
+// Ensure LEMONSQUEEZY_HALF_YEARLY_VARIANT_ID is set and the LS variant is
+// correctly priced before surfacing this plan on the pricing page internationally.
 //
 // The country check is server-side. Client-side locale detection is spoofable
-// and display-only — the routing decision must not be delegated to the client.
+// and display-only — routing must not be delegated to the client.
 //
 // NO OPTIMISTIC PRO ACCESS:
-//   This route returns a URL only. Pro access is granted exclusively by the
-//   webhook handlers (lemonsqueezy/route.ts, razorpay/route.ts) after payment
-//   is confirmed by the provider. The client polls GET /api/user/subscription.
+//   This route returns a checkout URL only. Pro access is granted exclusively
+//   by the webhook handlers after payment is confirmed by the provider.
+//   The client polls GET /api/user/subscription to detect the upgrade.
 //
 // RUNTIME: Node.js — Razorpay SDK uses Node.js internals (crypto, https).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +64,7 @@ function getLsVariantId(plan: PlanDuration): number {
 /**
  * Total billing cycles for Razorpay subscriptions.
  * Set high enough that the subscription never terminates before the customer
- * chooses to cancel. The webhook marks the subscription as cancelled on cancellation events.
+ * chooses to cancel.
  */
 const RAZORPAY_TOTAL_COUNT: Record<PlanDuration, number> = {
   'monthly':     600,  // 50 years
@@ -70,7 +75,7 @@ const RAZORPAY_TOTAL_COUNT: Record<PlanDuration, number> = {
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 export async function POST(request: Request): Promise<Response> {
-  // ── 1. Auth required — unauthenticated users cannot checkout ───────────────
+  // ── 1. Auth required ───────────────────────────────────────────────────────
   const { userId } = await auth();
   if (!userId) {
     return Response.json(
@@ -99,14 +104,13 @@ export async function POST(request: Request): Promise<Response> {
   }
   const plan = raw['plan'];
 
-  // ── 3. Get user email for provider checkout ────────────────────────────────
-  // currentUser() fetches fresh from Clerk — email is required by both providers.
+  // ── 3. Resolve user email ──────────────────────────────────────────────────
   const clerkUser = await currentUser();
   const email = clerkUser?.emailAddresses[0]?.emailAddress ?? '';
 
-  // ── 4. Route by country ────────────────────────────────────────────────────
-  // X-Vercel-IP-Country is set by Vercel's edge network in production.
-  // Falls back to empty string in local dev (routes to LS — safe default).
+  // ── 4. Geo routing ─────────────────────────────────────────────────────────
+  // X-Vercel-IP-Country is injected by Vercel's edge network in production.
+  // Falls back to '' in local dev → routes to Lemon Squeezy (safe default).
   const country = request.headers.get('x-vercel-ip-country') ?? '';
   const isIndia  = country.toUpperCase() === 'IN';
 
@@ -125,7 +129,7 @@ async function handleRazorpayCheckout(
 ): Promise<Response> {
   const planId = getRazorpayPlanId(plan);
   if (!planId) {
-    console.error(`[scorchpad/checkout] RAZORPAY_${plan.toUpperCase().replace('-','_')}_PLAN_ID not set`);
+    console.error(`[scorchpad/checkout] RAZORPAY_${plan.toUpperCase().replace(/-/g, '_')}_PLAN_ID not set`);
     return Response.json(
       { error: 'Checkout is temporarily unavailable. Please try again later.', code: 'ERR_CONFIG' },
       { status: 503 }
@@ -176,7 +180,7 @@ async function handleRazorpayCheckout(
   }
 }
 
-// ── Lemon Squeezy checkout (international users) ──────────────────────────────
+// ── Lemon Squeezy checkout (international users — all three plans) ────────────
 
 async function handleLsCheckout(
   plan:   PlanDuration,
@@ -214,7 +218,6 @@ async function handleLsCheckout(
       );
     }
 
-    // Response shape: result.data.data.attributes.url
     const checkoutUrl = result.data?.data?.attributes?.url;
     if (!checkoutUrl || typeof checkoutUrl !== 'string') {
       console.error('[scorchpad/checkout] LS returned no checkout URL', result);
