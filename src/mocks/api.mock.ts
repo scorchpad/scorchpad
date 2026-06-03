@@ -238,8 +238,12 @@ export async function createPaste(
  */
 export async function getPaste(
   id: string,
+  signal?: AbortSignal,
 ): Promise<GetPasteResponse | null> {
-  const res = await fetch(`/api/paste/${id}`, { credentials: 'same-origin' });
+  const res = await fetch(`/api/paste/${id}`, {
+    credentials: 'same-origin',
+    signal,
+  });
   if (res.status === 404) return null;
   if (!res.ok) {
     let code = 'ERR_UNKNOWN';

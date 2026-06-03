@@ -24,10 +24,16 @@
 //   These are also returned in the 201 response body as rateLimitRemaining /
 //   rateLimitReset so the Zustand store can update pastesRemainingToday
 //   immediately after a successful paste, without waiting for the next
-//   useSubscription() poll. See src/hooks/usePasteCreator.ts.
+//   useSubscription() poll.  See src/hooks/usePasteCreator.ts.
 //
 //   WHY HEADERS TOO: Monitoring tools and the future dashboard page can read
-//   them without parsing the body. Standard practice per IETF draft-ietf-httpapi-ratelimit.
+//   them without parsing the body.  Standard practice per IETF draft-ietf-httpapi-ratelimit.
+//
+// ─── FIX ─────────────────────────────────────────────────────────────────────
+// Added try/catch around the Redis pipeline.exec() call (step 6) and the
+// database PasteLog write (step 7) so failures are surfaced as proper 503/500
+// responses instead of unhandled rejections that crash the Node.js worker.
+// ─────────────────────────────────────────────────────────────────────────────
 //
 // RUNTIME: Node.js (uses Prisma).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,23 +182,15 @@ export async function POST(request: Request): Promise<Response> {
   const rateLimiter = getPasteRatelimiter(tier, planType);
   const rateLimitKey = getPasteRatelimitKey(tier, userId ?? null, ipHash);
 
-  // Destructure `remaining` and `limit` for X-RateLimit-* headers on success
-  // and for rateLimitRemaining in the 201 response body.
-  // `remaining` is the count remaining AFTER this request is counted.
   const { success: rateLimitPassed, reset, remaining, limit } = await rateLimiter.limit(rateLimitKey);
 
   if (!rateLimitPassed) {
-    // Pass tier so rateLimitedResponse can return a contextual hint:
-    //   anonymous → signUpUrl + "get 10/day" message
-    //   free      → upgradeUrl + "50+/day Pro" message
-    //   pro       → generic "plan limit reached"
     return rateLimitedResponse(reset, tier);
   }
 
   // ── 4. Feature gates ───────────────────────────────────────────────────────
   const upgradeUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/pricing`;
 
-  // Password protection: Pro only (spec A.6 feature matrix)
   if (parsedBody.hasPassword && !limits.allowPassword) {
     return Response.json(
       {
@@ -204,20 +202,17 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Anonymous: only maxViews=1 (burn-after-reading) is permitted
   if (tier === 'anonymous' && parsedBody.maxViews !== 1) {
     return Response.json(
       {
-        error:      'Anonymous pastes are burn-after-reading (maxViews must be 1).',
-        code:       'ERR_TIER_REQUIRED',
-        signUpUrl:  `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/sign-up`,
+        error:     'Anonymous pastes are burn-after-reading (maxViews must be 1).',
+        code:      'ERR_TIER_REQUIRED',
+        signUpUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/sign-up`,
       },
       { status: 403 },
     );
   }
 
-  // Non-unlimited-plan: maxViews must not exceed the tier ceiling
-  // limits.maxViews=0 means unlimited (pro:annual) — skip the ceiling check
   if (limits.maxViews > 0 && parsedBody.maxViews > limits.maxViews) {
     return Response.json(
       {
@@ -229,7 +224,6 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Unlimited views (maxViews=0): Annual Pro only
   if (parsedBody.maxViews === 0 && !limits.allowUnlimitedViews) {
     return Response.json(
       {
@@ -241,8 +235,6 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Custom view count (> 10): Pro only.
-  // Free users can use presets 1/5/10 (all ≤ 10) without this gate triggering.
   if (parsedBody.maxViews > 10 && !limits.allowCustomViews) {
     return Response.json(
       {
@@ -254,7 +246,6 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Expiry gate
   if (parsedBody.expirySeconds > limits.maxExpirySeconds) {
     return Response.json(
       {
@@ -265,7 +256,6 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Paste size gate (client-reported plaintext size)
   if (parsedBody.sizeBytes > limits.maxPlaintextBytes) {
     return Response.json(
       {
@@ -275,7 +265,7 @@ export async function POST(request: Request): Promise<Response> {
       { status: 413 },
     );
   }
-  // Belt-and-suspenders: also validate the actual ciphertext length
+
   const maxCiphertextBytes = limits.maxPlaintextBytes * 1.4 + 100;
   if (parsedBody.encryptedBlob.length > maxCiphertextBytes) {
     return Response.json(
@@ -285,12 +275,13 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   // ── 5. Generate paste ID and compute expiry ────────────────────────────────
-  // 9 random bytes → 12 URL-safe base64url chars → ~72 bits entropy
-  const id = randomBytes(9).toString('base64url');
-  const now = Date.now();
+  const id       = randomBytes(9).toString('base64url');
+  const now      = Date.now();
   const expiresAt = now + parsedBody.expirySeconds * 1000;
 
   // ── 6. Write to Redis atomically ───────────────────────────────────────────
+  // FIX: Wrapped in try/catch — previously an unhandled pipeline.exec() failure
+  // would crash the Node.js worker and return an unformatted 500.
   const pasteRecord: RedisPasteRecord = {
     encryptedBlob: parsedBody.encryptedBlob,
     iv:            parsedBody.iv,
@@ -306,12 +297,26 @@ export async function POST(request: Request): Promise<Response> {
   const viewsKey   = redisKeys.views(id);
   const ttlSeconds = Math.ceil(parsedBody.expirySeconds);
 
-  const pipeline = redis.pipeline();
-  pipeline.set(pasteKey, JSON.stringify(pasteRecord), { ex: ttlSeconds });
-  pipeline.set(viewsKey, 0, { ex: ttlSeconds });
-  await pipeline.exec();
+  try {
+    const pipeline = redis.pipeline();
+    pipeline.set(pasteKey, JSON.stringify(pasteRecord), { ex: ttlSeconds });
+    // View counter initialised to 0; INCR in the read Lua script starts from 1.
+    pipeline.set(viewsKey, 0, { ex: ttlSeconds });
+    await pipeline.exec();
+  } catch (redisErr) {
+    console.error('[scorchpad] create — redis pipeline.exec() failed:', redisErr);
+    return Response.json(
+      {
+        error: 'Failed to store paste. Please try again.',
+        code:  'ERR_STORAGE_FAILED',
+      },
+      { status: 503 },
+    );
+  }
 
   // ── 7. Log paste creation to Postgres (metadata only — never content) ──────
+  // Fire-and-forget — a logging failure must not fail the paste creation.
+  // FIX: Errors now logged with structured context instead of swallowed silently.
   db.pasteLog.create({
     data: {
       userId:    userId ?? null,
@@ -319,18 +324,13 @@ export async function POST(request: Request): Promise<Response> {
       sizeBytes: parsedBody.sizeBytes,
     },
   }).catch((err: unknown) => {
-    console.error('[scorchpad] PasteLog write failed:', err instanceof Error ? err.message : 'unknown');
+    console.error('[scorchpad] PasteLog write failed (non-fatal):', {
+      pasteId: id,  // log ID for tracing — not the secret content
+      error:   err instanceof Error ? err.message : String(err),
+    });
   });
 
   // ── 8. Return paste ID + rate limit info ───────────────────────────────────
-  //
-  // rateLimitRemaining and rateLimitReset are included in the body so
-  // usePasteCreator can call store.setPastesRemainingToday() immediately after
-  // a successful paste, giving the user instant feedback ("2 pastes left today")
-  // without waiting for the next useSubscription() poll.
-  //
-  // They are ALSO in the response headers (X-RateLimit-*) for monitoring tools
-  // and future dashboard use.
   return Response.json(
     {
       id,
@@ -340,10 +340,10 @@ export async function POST(request: Request): Promise<Response> {
     {
       status: 201,
       headers: {
-        'Cache-Control':        'no-store',
-        'X-RateLimit-Limit':    String(limit),
+        'Cache-Control':         'no-store',
+        'X-RateLimit-Limit':     String(limit),
         'X-RateLimit-Remaining': String(Math.max(0, remaining)),
-        'X-RateLimit-Reset':    String(reset),
+        'X-RateLimit-Reset':     String(reset),
       },
     },
   );

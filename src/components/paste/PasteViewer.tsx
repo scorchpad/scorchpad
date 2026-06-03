@@ -1,6 +1,6 @@
 // src/components/paste/PasteViewer.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Decrypts and renders a paste. Handles all error/loading states.
+// Decrypts and renders a paste.  Handles all error/loading states.
 //
 // SYNTAX HIGHLIGHTING (spec Gotcha #12):
 //   highlight.js is dynamically imported and applied after decryption.
@@ -9,6 +9,16 @@
 //
 // NEW: "Last view" notification when viewsRemaining === 0 so users understand
 //   the paste has been permanently deleted after this view — not just expired.
+//
+// ─── FIX ─────────────────────────────────────────────────────────────────────
+// Extended the error message map to cover the two new ViewerError codes added
+// in src/types/index.ts:
+//
+//   'rate_limited'  — 429: too many requests — inform user and give retry guidance.
+//   'server_error'  — 5xx/network — tell user it's transient and suggest retry.
+//
+// Previously both mapped to the catch-all 'An unexpected error occurred.' in the
+// fallback branch; they now have precise, user-friendly messages.
 // ─────────────────────────────────────────────────────────────────────────────
 
 'use client';
@@ -112,10 +122,15 @@ export function PasteViewer({ id }: { id: string }) {
   } = usePasteViewer(id);
 
   if (error) {
+    // FIX: Added 'rate_limited' and 'server_error' messages.
+    // Previously both fell through to the generic fallback, showing
+    // "An unexpected error occurred." for rate-limits and server failures.
     const messages: Record<string, string> = {
       not_found:     'This paste has expired or no longer exists.',
       missing_key:   'Decryption key missing — make sure you have the full URL including the # fragment.',
       decrypt_failed:'Could not decrypt. The link may be incomplete or corrupted.',
+      rate_limited:  'Too many requests. Please wait a moment and try again.',
+      server_error:  'Something went wrong on our end. Please try refreshing the page.',
     };
     return <ErrorCard message={messages[error] ?? 'An unexpected error occurred.'} />;
   }
@@ -175,9 +190,7 @@ export function PasteViewer({ id }: { id: string }) {
 
       {/* ── Last-view notification ────────────────────────────────────────
            Shown when viewsRemaining === 0 so the viewer knows this paste
-           was permanently deleted after their view. Previously this showed
-           nothing and then the link would show "expired" to anyone else,
-           which was confusing without context.                              */}
+           was permanently deleted after their view.                         */}
       {wasLastView && (
         <div
           role="status"
@@ -191,7 +204,7 @@ export function PasteViewer({ id }: { id: string }) {
 
       {/* ── Decrypted content ─────────────────────────────────────────────
            Wrapped in ErrorBoundary so a crypto/render failure shows a
-           graceful error card rather than a white screen (spec C rules).   */}
+           graceful error card rather than a white screen.                   */}
       <ErrorBoundary>
         <DecryptedContent content={decryptedContent} language={pasteData.language} />
       </ErrorBoundary>

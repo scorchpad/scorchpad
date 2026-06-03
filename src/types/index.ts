@@ -30,10 +30,16 @@ export interface PricingFeature {
 
 // ── Viewer error codes ────────────────────────────────────────────────────────
 // Kept as a literal union so error rendering in PasteViewer is exhaustive.
+//
+// FIX: Added 'rate_limited' and 'server_error' codes so usePasteViewer can
+// surface precise feedback instead of showing "paste not found" for every
+// non-404 error (rate limits, Redis failures, network errors, etc.).
 export type ViewerError =
-  | 'not_found'       // paste missing or expired
-  | 'missing_key'     // URL has no #fragment
-  | 'decrypt_failed'; // AES-GCM threw (wrong key or corrupted blob)
+  | 'not_found'      // 404 — paste missing, expired, or burned
+  | 'missing_key'    // URL fragment (#key=…) is absent — can't decrypt
+  | 'decrypt_failed' // AES-GCM threw — wrong key or corrupted blob
+  | 'rate_limited'   // 429 — too many requests; show retry guidance
+  | 'server_error';  // 5xx / network failure — transient; suggest retry
 
 // ── Password prompt step ──────────────────────────────────────────────────────
 // 'deriving' = PBKDF2 key derivation in progress.

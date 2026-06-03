@@ -20,7 +20,24 @@
 // Running it on GET would destroy a maxViews=1 paste before the password is entered.
 // See Gotcha #11.
 //
-// RUNTIME: Node.js — uses timingSafeEqual from node:crypto (not available in Edge).
+// ─── FIX (CRITICAL) ──────────────────────────────────────────────────────────
+// Same root-cause fix as in GET route.ts:
+//
+// OLD (broken):
+//   redis.eval(VIEW_AND_BURN_LUA, [pasteKey, viewsKey], [String(now)])
+//   → Lua returned [pasteJson, viewsRemainingStr]
+//   → Upstash auto-deserialised pasteJson string into a JS object
+//   → JSON.parse(object) → "[object Object]" → SyntaxError → catch → 404
+//
+// NEW (correct):
+//   redis.eval(VIEW_AND_BURN_LUA, [pasteKey, viewsKey],
+//              [String(paste.maxViews), String(paste.expiresAt), String(now)])
+//   → Lua returns only [viewsRemainingStr]
+//   → Route uses already-fetched `paste` object for the HTTP response
+//   → No JSON.parse needed — no Upstash deserialisation issue
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// RUNTIME: Node.js — uses timingSafeEqual from node:crypto (not available on Edge).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const runtime = 'nodejs';
@@ -37,6 +54,12 @@ import {
   type RedisPasteRecord,
 } from '../../../../../lib/paste-types';
 
+const NO_CACHE_HEADERS: HeadersInit = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma':        'no-cache',
+  'Expires':       '0',
+};
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -45,7 +68,10 @@ export async function POST(
 
   // ── 1. Validate ID format ──────────────────────────────────────────────────
   if (!/^[A-Za-z0-9_-]{12}$/.test(id)) {
-    return Response.json({ error: 'Paste not found', code: 'ERR_NOT_FOUND' }, { status: 404 });
+    return Response.json(
+      { error: 'Paste not found', code: 'ERR_NOT_FOUND' },
+      { status: 404, headers: NO_CACHE_HEADERS }
+    );
   }
 
   // ── 2. Parse and validate request body ────────────────────────────────────
@@ -53,22 +79,25 @@ export async function POST(
   try {
     body = await request.json();
   } catch {
-    return Response.json({ error: 'Invalid JSON body', code: 'ERR_INVALID_BODY' }, { status: 400 });
+    return Response.json(
+      { error: 'Invalid JSON body', code: 'ERR_INVALID_BODY' },
+      { status: 400, headers: NO_CACHE_HEADERS }
+    );
   }
 
   if (!body || typeof body !== 'object') {
-    return Response.json({ error: 'Body must be an object', code: 'ERR_INVALID_BODY' }, { status: 400 });
+    return Response.json(
+      { error: 'Body must be an object', code: 'ERR_INVALID_BODY' },
+      { status: 400, headers: NO_CACHE_HEADERS }
+    );
   }
 
   const raw = body as Record<string, unknown>;
 
-  // The frontend mock function is verifyPastePassword(id, passwordHash).
-  // The POST body field is { passwordProof: string }.
-  // passwordProof = HMAC-SHA256(derivedKey, pasteId) — rate-limiting token only.
   if (typeof raw['passwordProof'] !== 'string' || raw['passwordProof'].length === 0) {
     return Response.json(
       { error: 'passwordProof is required', code: 'ERR_MISSING_FIELD' },
-      { status: 400 }
+      { status: 400, headers: NO_CACHE_HEADERS }
     );
   }
   const submittedProof = raw['passwordProof'];
@@ -77,7 +106,7 @@ export async function POST(
   // Key combines IP hash + paste ID to lock per-paste, not globally.
   // This prevents brute-forcing proof tokens on any single target paste.
   // 5 attempts per 15 minutes before lockout.
-  const rawIp = getClientIp(request);
+  const rawIp  = getClientIp(request);
   const ipHash = await hashIp(rawIp);
   const rateLimitKey = `${ipHash}:${id}`;
 
@@ -88,82 +117,106 @@ export async function POST(
 
   // ── 4. Fetch paste from Redis ──────────────────────────────────────────────
   const pasteKey = redisKeys.paste(id);
-  // Upstash auto-parses JSON on get() — use the typed form directly.
-  const paste = await redis.get<RedisPasteRecord>(pasteKey);
+  const viewsKey = redisKeys.views(id);
+
+  let paste: RedisPasteRecord | null;
+  try {
+    paste = await redis.get<RedisPasteRecord>(pasteKey);
+  } catch (redisErr) {
+    console.error('[scorchpad] verify-password — redis.get() failed:', redisErr);
+    return Response.json(
+      { error: 'Service temporarily unavailable. Please try again.', code: 'ERR_SERVICE_UNAVAILABLE' },
+      { status: 503, headers: NO_CACHE_HEADERS }
+    );
+  }
 
   if (!paste) {
-    return Response.json({ error: 'Paste not found or expired', code: 'ERR_NOT_FOUND' }, { status: 404 });
+    return Response.json(
+      { error: 'Paste not found or expired', code: 'ERR_NOT_FOUND' },
+      { status: 404, headers: NO_CACHE_HEADERS }
+    );
   }
 
   // ── 5. Confirm this paste actually requires a password ────────────────────
   if (!paste.hasPassword || !paste.passwordProof) {
-    // Caller is wrong about the paste type — return 400, not 404 (don't leak state)
+    // Return 400, not 404 (don't leak state about whether the paste exists)
     return Response.json(
       { error: 'This paste is not password-protected', code: 'ERR_NOT_PASSWORD_PROTECTED' },
-      { status: 400 }
+      { status: 400, headers: NO_CACHE_HEADERS }
     );
   }
 
   // ── 6. Constant-time proof comparison ─────────────────────────────────────
   // Both buffers must be the same byte length for timingSafeEqual.
-  // If they differ in length, proof is wrong — short-circuit with a constant-time
+  // If they differ in length, the proof is wrong — short-circuit with a constant-time
   // false by comparing against the stored proof (which IS the right length).
-  const storedProofBuf   = Buffer.from(paste.passwordProof, 'utf8');
-  const submittedProofBuf = Buffer.from(submittedProof, 'utf8');
+  const storedProofBuf    = Buffer.from(paste.passwordProof, 'utf8');
+  const submittedProofBuf = Buffer.from(submittedProof,      'utf8');
 
   const proofMatch =
     storedProofBuf.length === submittedProofBuf.length &&
     timingSafeEqual(storedProofBuf, submittedProofBuf);
 
   if (!proofMatch) {
-    // Return 401, not 403 — the proof was wrong, not forbidden
     return Response.json(
       { error: 'Incorrect password', code: 'ERR_WRONG_PASSWORD' },
-      { status: 401 }
+      { status: 401, headers: NO_CACHE_HEADERS }
     );
   }
 
-  // ── 7. Correct proof — run the atomic view + burn Lua script ──────────────
-  // This is where the view counter is decremented for password-protected pastes.
-  // Running it here (not on GET) is the fix for Gotcha #11.
-  const viewsKey = redisKeys.views(id);
+  // ── 7. Correct proof — run atomic view-count + burn ───────────────────────
+  // Belt-and-suspenders expiry check before running Lua.
   const now = Date.now();
-
-  // Belt-and-suspenders expiry check before running Lua
   if (paste.expiresAt > 0 && paste.expiresAt < now) {
-    await redis.del(pasteKey, viewsKey);
-    return Response.json({ error: 'Paste not found or expired', code: 'ERR_NOT_FOUND' }, { status: 404 });
+    try {
+      await redis.del(pasteKey, viewsKey);
+    } catch {
+      // DEL failure is non-fatal — Redis TTL will clean up.
+    }
+    return Response.json(
+      { error: 'Paste not found or expired', code: 'ERR_NOT_FOUND' },
+      { status: 404, headers: NO_CACHE_HEADERS }
+    );
   }
 
-  const result = await redis.eval(
-    VIEW_AND_BURN_LUA,
-    [pasteKey, viewsKey],
-    [String(now)]
-  ) as LuaViewResult;
+  // FIX: Pass maxViews, expiresAt, now as ARGV — Lua no longer returns paste JSON.
+  // The script returns only [viewsRemainingStr] or nil.
+  let result: LuaViewResult;
+  try {
+    result = await redis.eval(
+      VIEW_AND_BURN_LUA,
+      [pasteKey, viewsKey],
+      [String(paste.maxViews), String(paste.expiresAt), String(now)]
+    ) as LuaViewResult;
+  } catch (evalErr) {
+    console.error('[scorchpad] verify-password — redis.eval() failed:', evalErr);
+    return Response.json(
+      { error: 'Service temporarily unavailable. Please try again.', code: 'ERR_SERVICE_UNAVAILABLE' },
+      { status: 503, headers: NO_CACHE_HEADERS }
+    );
+  }
 
   if (!result) {
-    // Expired or burned by a concurrent verify call during this window
-    return Response.json({ error: 'Paste not found or expired', code: 'ERR_NOT_FOUND' }, { status: 404 });
+    // Expired or burned by a concurrent verify call during this window.
+    return Response.json(
+      { error: 'Paste not found or expired', code: 'ERR_NOT_FOUND' },
+      { status: 404, headers: NO_CACHE_HEADERS }
+    );
   }
 
-  const [resultPasteJson, viewsRemainingStr] = result;
-  const viewsRemaining = Number(viewsRemainingStr);
+  // result[0] is the views-remaining status string/number (Upstash may auto-parse).
+  const viewsRemaining = Number(result[0]);
 
-  let resultPaste: RedisPasteRecord;
-  try {
-    resultPaste = JSON.parse(resultPasteJson) as RedisPasteRecord;
-  } catch {
-    return Response.json({ error: 'Paste not found or expired', code: 'ERR_NOT_FOUND' }, { status: 404 });
-  }
-
-  // ── 8. Return the encrypted blob ───────────────────────────────────────────
-  // VerifyPasswordResponse shape from api.mock.ts:
-  // { encryptedBlob: string, iv: string, viewsRemaining: number, expiresAt: number, language: string | null }
-  return Response.json({
-    encryptedBlob:  resultPaste.encryptedBlob,
-    iv:             resultPaste.iv,
-    viewsRemaining,
-    expiresAt:      resultPaste.expiresAt,
-    language:       resultPaste.language,
-  });
+  // ── 8. Return encrypted blob for client-side decryption ───────────────────
+  // FIX: Use the already-fetched `paste` object — no JSON.parse needed.
+  return Response.json(
+    {
+      encryptedBlob:  paste.encryptedBlob,
+      iv:             paste.iv,
+      viewsRemaining,
+      expiresAt:      paste.expiresAt,
+      language:       paste.language,
+    },
+    { headers: NO_CACHE_HEADERS }
+  );
 }
