@@ -1,6 +1,13 @@
 // lib/plan-limits.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// Single source of truth for all tier-based feature gates and daily limits.
+// Single source of truth for all tier-based feature gates, daily limits,
+// and ALLOWED expiry windows.
+//
+// SECURITY FIX (#4): expirySeconds now enforced via strict per-tier whitelist.
+// The old code used only a max-value check, allowing arbitrary values like
+// 83,000 s for a free user (should be exactly 86,400 or lower presets only).
+// ALLOWED_EXPIRY_SECONDS is the canonical list; create/route.ts validates
+// against this set before accepting a request.
 //
 // VALUES ARE AUTHORITATIVE — SPEC A.7 (SCORCHPAD_MASTER_BUILD_PROMPT_v3.md)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -11,22 +18,6 @@
 // | pro:monthly    | 604 800  (7 d)         | 524 288  (500 KB) | 9 999    |
 // | pro:half-yr    | 2 592 000  (30 d)      | 524 288  (500 KB) | 9 999    |
 // | pro:annual     | 7 776 000  (90 d)      | 1 048 576  (1 MB) | 0 (∞)    |
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// NOTE — password protection:
-//   Per spec A.6 feature matrix: password protection is a PRO-ONLY feature.
-//   anonymous.allowPassword = false  ← correct
-//   free.allowPassword      = false  ← FIXED (was incorrectly true)
-//   pro:*.allowPassword     = true
-//
-// NOTE — maxViews ceiling semantics:
-//   maxViews = 0 → unlimited (pro:annual only).
-//   maxViews > 0 → hard server-side ceiling; client preset choices must be ≤ this.
-//   The create route enforces: parsedBody.maxViews <= limits.maxViews (when > 0).
-//
-// WHY planType, NOT isPro: Monthly (50/day) ≠ Half-Yearly (150/day) ≠ Annual (500/day).
-// Collapsing all Pro tiers into one bucket loses the per-plan daily caps.
-// See Gotcha #16 in the build spec.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type UserTier  = 'anonymous' | 'free' | 'pro';
@@ -41,12 +32,12 @@ export type TierInfo = {
 
 export type PlanLimits = {
   dailyPastes: number;
-  /** Maximum expiry in seconds. */
+  /** Maximum expiry in seconds — used only as a fast-fail before whitelist check. */
   maxExpirySeconds: number;
   /**
    * Maximum view count ceiling.
    * 0  = unlimited (pro:annual only, gated by allowUnlimitedViews).
-   * >0 = hard ceiling enforced server-side; create route rejects parsedBody.maxViews > this.
+   * >0 = hard ceiling enforced server-side.
    */
   maxViews: number;
   /** Maximum plaintext bytes. Ciphertext in the request body will be ~1.37× this. */
@@ -54,23 +45,49 @@ export type PlanLimits = {
   /** Password-protected pastes — Pro only per spec. */
   allowPassword: boolean;
   allowExtendedExpiry: boolean;
-  /** Custom view count input (any 1–9999). Pro only. Free gets fixed presets 1/5/10. */
+  /** Custom view count input (any 1–9999). Pro only. */
   allowCustomViews: boolean;
   /** Unlimited views (maxViews=0). Annual Pro only. */
   allowUnlimitedViews: boolean;
-  /** Plaintext > 50 KB, up to 500 KB / 1 MB. Any Pro plan. */
+  /** Plaintext > 50 KB. Any Pro plan. */
   allowLargePaste: boolean;
 };
 
+// ── Strict expiry whitelists ──────────────────────────────────────────────────
+// SECURITY FIX (#4): Only these exact values are accepted in POST /api/paste/create.
+// Any value not present in this set for the caller's tier → 400 ERR_INVALID_EXPIRY.
+// Using a Set for O(1) lookup.
+
+export const ALLOWED_EXPIRY_SECONDS: Record<string, ReadonlySet<number>> = {
+  anonymous:       new Set([300, 3_600]),
+  free:            new Set([300, 3_600, 86_400]),
+  'pro:monthly':   new Set([300, 3_600, 86_400, 604_800]),
+  'pro:half-yearly': new Set([300, 3_600, 86_400, 604_800, 2_592_000]),
+  'pro:annual':    new Set([300, 3_600, 86_400, 604_800, 2_592_000, 7_776_000]),
+} as const;
+
+/**
+ * Returns true if the given expirySeconds value is in the allowed set for
+ * the caller's tier + planType.  Called in POST /api/paste/create.
+ */
+export function isAllowedExpiry(
+  expirySeconds: number,
+  tier:          UserTier,
+  planType:      PlanType | null,
+): boolean {
+  const key     = getLimitsKey(tier, planType);
+  const allowed = ALLOWED_EXPIRY_SECONDS[key];
+  return allowed?.has(expirySeconds) ?? false;
+}
+
 // ── Authoritative plan limits ─────────────────────────────────────────────────
-// Every value cross-referenced against spec A.7 and the ExpirySelector option list.
 
 export const PLAN_LIMITS: Record<string, PlanLimits> = {
   anonymous: {
     dailyPastes:        3,
-    maxExpirySeconds:   3_600,               // spec: 1 hour
-    maxViews:           1,                   // spec: 1 only (burn-after-reading)
-    maxPlaintextBytes:  10_240,              // spec: 10 KB
+    maxExpirySeconds:   3_600,
+    maxViews:           1,
+    maxPlaintextBytes:  10_240,
     allowPassword:         false,
     allowExtendedExpiry:   false,
     allowCustomViews:      false,
@@ -79,20 +96,20 @@ export const PLAN_LIMITS: Record<string, PlanLimits> = {
   },
   free: {
     dailyPastes:        10,
-    maxExpirySeconds:   86_400,              // spec: 24 hours
-    maxViews:           10,                  // spec: up to 10 (presets: 1, 5, 10)
-    maxPlaintextBytes:  51_200,              // spec: 50 KB
-    allowPassword:         false,            // spec: Pro only — FIXED (was incorrectly true)
+    maxExpirySeconds:   86_400,
+    maxViews:           10,
+    maxPlaintextBytes:  51_200,
+    allowPassword:         false,
     allowExtendedExpiry:   false,
-    allowCustomViews:      false,            // free gets fixed presets only
+    allowCustomViews:      false,
     allowUnlimitedViews:   false,
     allowLargePaste:       false,
   },
   'pro:monthly': {
     dailyPastes:        50,
-    maxExpirySeconds:   7 * 24 * 3_600,     // spec: 7 days
-    maxViews:           9_999,               // spec: any 1–9999
-    maxPlaintextBytes:  524_288,             // spec: 500 KB
+    maxExpirySeconds:   7 * 24 * 3_600,
+    maxViews:           9_999,
+    maxPlaintextBytes:  524_288,
     allowPassword:         true,
     allowExtendedExpiry:   true,
     allowCustomViews:      true,
@@ -101,9 +118,9 @@ export const PLAN_LIMITS: Record<string, PlanLimits> = {
   },
   'pro:half-yearly': {
     dailyPastes:        150,
-    maxExpirySeconds:   30 * 24 * 3_600,    // spec: 30 days
+    maxExpirySeconds:   30 * 24 * 3_600,
     maxViews:           9_999,
-    maxPlaintextBytes:  524_288,             // spec: 500 KB
+    maxPlaintextBytes:  524_288,
     allowPassword:         true,
     allowExtendedExpiry:   true,
     allowCustomViews:      true,
@@ -112,9 +129,9 @@ export const PLAN_LIMITS: Record<string, PlanLimits> = {
   },
   'pro:annual': {
     dailyPastes:        500,
-    maxExpirySeconds:   90 * 24 * 3_600,    // spec: 90 days
-    maxViews:           0,                   // 0 = unlimited per spec
-    maxPlaintextBytes:  1_048_576,           // spec: 1 MB
+    maxExpirySeconds:   90 * 24 * 3_600,
+    maxViews:           0,
+    maxPlaintextBytes:  1_048_576,
     allowPassword:         true,
     allowExtendedExpiry:   true,
     allowCustomViews:      true,
@@ -125,10 +142,6 @@ export const PLAN_LIMITS: Record<string, PlanLimits> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Returns the PLAN_LIMITS key for a given tier + planType combination.
- * Single place to update if key names ever change.
- */
 export function getLimitsKey(tier: UserTier, planType: PlanType | null): string {
   if (tier === 'anonymous') return 'anonymous';
   if (tier === 'free')      return 'free';
@@ -137,10 +150,6 @@ export function getLimitsKey(tier: UserTier, planType: PlanType | null): string 
   return 'pro:monthly';
 }
 
-/**
- * Returns the PlanLimits for the given tier and plan.
- * Falls back to 'anonymous' limits defensively if the key is somehow missing.
- */
 export function getLimits(tier: UserTier, planType: PlanType | null): PlanLimits {
   const key = getLimitsKey(tier, planType);
   return PLAN_LIMITS[key] ?? (PLAN_LIMITS['anonymous'] as PlanLimits);
@@ -152,7 +161,6 @@ export function getLimits(tier: UserTier, planType: PlanType | null): PlanLimits
  *
  * Requires the Clerk JWT template to include publicMetadata:
  *   { "metadata": "{{user.public_metadata}}" }
- * Configure at: Clerk Dashboard → Sessions → Edit JWT Template.
  */
 export function deriveTierFromClaims(
   userId:        string | null,
@@ -185,10 +193,6 @@ export function deriveTierFromClaims(
   return { tier: 'pro', planType, currentPeriodEnd };
 }
 
-/**
- * Returns the upgrade URL for paywall responses.
- * Single place to update if the pricing page path changes.
- */
 export function getUpgradeUrl(): string {
   return `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/pricing`;
 }
