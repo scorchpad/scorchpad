@@ -49,9 +49,9 @@ import { lemonSqueezySetup, createCheckout } from '@lemonsqueezy/lemonsqueezy.js
 import { auth, currentUser } from '@clerk/nextjs/server';
 import type { Subscriptions } from 'razorpay/dist/types/subscriptions';
 
-import { db }           from '../../../../lib/db';
-import { getClientIp, hashIp } from '../../../../lib/ip';
-import { checkoutLimit } from '../../../../lib/ratelimit';
+import { db }           from '../../../lib/db';
+import { getClientIp, hashIp } from '../../../lib/ip';
+import { checkoutLimit } from '../../../lib/ratelimit';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
