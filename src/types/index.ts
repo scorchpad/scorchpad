@@ -42,6 +42,7 @@ export type ViewerError =
   | 'server_error';  // 5xx / network failure — transient; suggest retry
 
 // ── Password prompt step ──────────────────────────────────────────────────────
+// 'verifying' = network call to fetch encrypted blob from server (no proof sent).
 // 'deriving' = PBKDF2 key derivation in progress.
 // 'decrypting' = AES-GCM decrypt in progress (fast, <10ms).
-export type DecryptStep = 'idle' | 'deriving' | 'decrypting';
+export type DecryptStep = 'idle' | 'verifying' | 'deriving' | 'decrypting';
