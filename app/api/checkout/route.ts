@@ -39,6 +39,17 @@
 //          calling the provider API. If one exists, return 409 ERR_ALREADY_SUBSCRIBED
 //          so the client can redirect to account management instead.
 //
+// FIX UPI-1 — RAZORPAY_TOTAL_COUNT values caused "expire_at > 30 years" UPI error (NEW):
+//   OLD: monthly=600, half-yearly=120, annual=50
+//   These translate to subscription end dates of 50yr, 60yr, and 50yr respectively.
+//   Razorpay's UPI Autopay mandate enforces a hard ceiling of 30 years for expire_at.
+//   Any subscription whose total_count × billing_interval exceeds that ceiling is
+//   rejected at the UPI payment step with:
+//     "expire_at cannot be more than 30 years for upi"
+//   NEW: monthly=120 (10yr), half-yearly=20 (10yr), annual=10 (10yr).
+//   All three are well within the 30-year UPI cap. Users who are still active after
+//   10 years can trivially re-subscribe — standard SaaS behaviour.
+//
 // RUNTIME: Node.js — Razorpay SDK uses Node.js internals (crypto, https).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -84,10 +95,15 @@ function getLsVariantId(plan: PlanDuration): number {
   return raw ? Number(raw) : 0;
 }
 
+// FIX: UPI mandate expire_at cannot exceed 30 years from today (Razorpay constraint).
+// Razorpay derives expire_at as: start_at + (billing_interval × total_count).
+// Old values:  monthly=600mo (50yr), half-yearly=120×6mo (60yr), annual=50×12mo (50yr)
+// All three blew past the 30-year UPI ceiling → "expire_at cannot be more than 30 years for upi"
+// New values represent 10 years per plan — well within the limit and generous for any SaaS.
 const RAZORPAY_TOTAL_COUNT: Record<PlanDuration, number> = {
-  'monthly':     600,
-  'half-yearly': 120,
-  'annual':      50,
+  'monthly':     120,  // 120 × 1 month  = 10 years  (was 600 = 50 years → UPI rejected)
+  'half-yearly':  20,  //  20 × 6 months = 10 years  (was 120 = 60 years → UPI rejected)
+  'annual':       10,  //  10 × 12 months = 10 years  (was  50 = 50 years → UPI rejected)
 };
 
 // ── Active subscription statuses that block new checkout ─────────────────────
