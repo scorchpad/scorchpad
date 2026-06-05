@@ -255,10 +255,11 @@ export async function checkActionAllowed(
 
 export async function openCheckout(
   plan: PlanDuration,
+  region: 'india' | 'intl',
 ): Promise<{ checkoutUrl: string }> {
   return apiFetch<{ checkoutUrl: string }>(
     '/api/checkout',
-    { method: 'POST', body: JSON.stringify({ plan }) },
+    { method: 'POST', body: JSON.stringify({ plan, region }) },
   );
 }
 

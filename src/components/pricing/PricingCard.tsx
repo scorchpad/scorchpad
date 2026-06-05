@@ -1,6 +1,8 @@
 'use client';
+import { useState } from 'react';
 import { FeatureRow } from './FeatureRow';
 import { openCheckout, PlanDuration } from '../../mocks/api.mock';
+import { Spinner } from '../ui/Spinner';
 
 const MONTHLY_BASE_INR = 149;
 const MONTHLY_BASE_USD = 3;
@@ -8,16 +10,12 @@ const MONTHLY_BASE_USD = 3;
 function getSavingsBadge(plan: PlanDuration | 'free', isIndia: boolean): string | null {
   const monthlyBase = isIndia ? MONTHLY_BASE_INR : MONTHLY_BASE_USD;
   if (plan === 'half-yearly') {
-    // India: ₹549 vs ₹149×6=₹894 → Save 39%
-    // Intl:  $12  vs $3×6=$18    → Save 33%
     const fullPrice = isIndia ? 549 : 12;
     const wouldPay = monthlyBase * 6;
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
     return `Save ${saving}%`;
   }
   if (plan === 'annual') {
-    // India: ₹999  vs ₹149×12=₹1788 → Save 44%
-    // Intl:  $24   vs $3×12=$36     → Save 33%
     const fullPrice = isIndia ? 999 : 24;
     const wouldPay = monthlyBase * 12;
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
@@ -27,14 +25,8 @@ function getSavingsBadge(plan: PlanDuration | 'free', isIndia: boolean): string 
 }
 
 function getMonthlyEquivalent(plan: PlanDuration | 'free', isIndia: boolean): string | null {
-  if (plan === 'half-yearly') {
-    // India: ₹549/6 = ₹91.5/mo ≈ ₹92/mo
-    // Intl:  $12/6  = $2/mo
-    return isIndia ? '≈ ₹92/mo' : '≈ $2/mo';
-  }
-  if (plan === 'annual') {
-    return isIndia ? '≈ ₹83/mo' : '≈ $2/mo';
-  }
+  if (plan === 'half-yearly') return isIndia ? '≈ ₹92/mo' : '≈ $2/mo';
+  if (plan === 'annual')      return isIndia ? '≈ ₹83/mo' : '≈ $2/mo';
   return null;
 }
 
@@ -46,6 +38,7 @@ export function PricingCard({
   features,
   isPro,
   isIndia = false,
+  region = 'india',
 }: {
   plan: PlanDuration | 'free';
   title: string;
@@ -54,17 +47,32 @@ export function PricingCard({
   features: { included: boolean; text: string }[];
   isPro: boolean;
   isIndia?: boolean;
+  region?: 'india' | 'intl';
 }) {
+  const [isLoading, setIsLoading] = useState(false);
+
   const handleCheckout = async () => {
-    if (plan === 'free') return;
+    if (plan === 'free' || isLoading) return;
+    setIsLoading(true);
     try {
-      const { checkoutUrl } = await openCheckout(plan);
+      const { checkoutUrl } = await openCheckout(plan, region);
       if (typeof window !== 'undefined') window.location.href = checkoutUrl;
-    } catch {}
+      // Note: don't reset isLoading on success — the page is navigating away.
+      // The button stays in loading state until the navigation completes.
+    } catch {
+      // On error, reset so the user can retry.
+      setIsLoading(false);
+    }
   };
 
   const savingsBadge = getSavingsBadge(plan, isIndia);
   const monthlyEquiv = getMonthlyEquivalent(plan, isIndia);
+
+  const getButtonLabel = () => {
+    if (plan === 'free') return 'Current Plan';
+    if (isLoading) return null; // Show spinner instead
+    return isPro ? 'Upgrade Now' : 'Get Started';
+  };
 
   return (
     <div
@@ -106,13 +114,21 @@ export function PricingCard({
 
       <button
         onClick={handleCheckout}
-        className={`w-full py-3 rounded-xl font-bold transition mb-8 uppercase tracking-widest text-[10px] ${
+        disabled={isLoading || plan === 'free'}
+        className={`w-full py-3 rounded-xl font-bold transition mb-8 uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 ${
           isPro
-            ? 'bg-indigo-600 dark:bg-orange-600 text-white hover:bg-indigo-700 dark:hover:bg-orange-500 shadow-md dark:shadow-lg dark:shadow-orange-500/20'
-            : 'bg-gray-50 dark:bg-black border border-gray-200 dark:border-white/10 text-gray-700 dark:text-white/70 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-900 dark:hover:text-white'
+            ? 'bg-indigo-600 dark:bg-orange-600 text-white hover:bg-indigo-700 dark:hover:bg-orange-500 shadow-md dark:shadow-lg dark:shadow-orange-500/20 disabled:opacity-70 disabled:cursor-not-allowed'
+            : 'bg-gray-50 dark:bg-black border border-gray-200 dark:border-white/10 text-gray-700 dark:text-white/70 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-900 dark:hover:text-white disabled:opacity-70 disabled:cursor-not-allowed'
         }`}
       >
-        {isPro ? 'Upgrade Now' : plan === 'free' ? 'Current Plan' : 'Get Started'}
+        {isLoading ? (
+          <>
+            <Spinner size={12} />
+            <span>Redirecting...</span>
+          </>
+        ) : (
+          getButtonLabel()
+        )}
       </button>
 
       <ul className="flex flex-col gap-4">

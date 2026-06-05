@@ -163,9 +163,21 @@ export async function POST(request: Request): Promise<Response> {
   const clerkUser = await currentUser();
   const email = clerkUser?.emailAddresses[0]?.emailAddress ?? '';
 
-  // ── 4. Geo routing ─────────────────────────────────────────────────────────
+  // ── 4. Routing: explicit client region overrides geo-detection ────────────
+  // When the user explicitly selects the $ (International) or India tab on
+  // the pricing page, that selection is sent as raw['region']. We honour it
+  // directly so an Indian user who chose International gets Lemon Squeezy,
+  // and a non-Indian user who chose India gets Razorpay.
+  // If no region is sent (direct API call), fall back to x-vercel-ip-country.
+  const clientRegion = (() => {
+    const r = raw['region'];
+    if (r === 'india' || r === 'intl') return r as 'india' | 'intl';
+    return null;
+  })();
   const country = request.headers.get('x-vercel-ip-country') ?? '';
-  const isIndia  = country.toUpperCase() === 'IN';
+  const isIndia = clientRegion === 'india' ? true
+                : clientRegion === 'intl'  ? false
+                : country.toUpperCase() === 'IN';
 
   if (isIndia) {
     return handleRazorpayCheckout(plan, userId, email);

@@ -98,6 +98,7 @@ export default function PricingPage() {
 
       {/* ── Region tab switcher ── */}
       <div className="flex items-center gap-2 mb-12 bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl p-1">
+
         {/* International tab — Lemon Squeezy (USD) */}
         <button
           onClick={() => setRegion('intl')}
@@ -108,6 +109,9 @@ export default function PricingPage() {
           }`}
         >
           $
+          <span className="ml-2 text-[9px] font-normal normal-case tracking-normal">
+            International
+          </span>
         </button>
 
         {/* India tab — Razorpay (INR) */}
@@ -136,6 +140,7 @@ export default function PricingPage() {
           features={freeFeatures}
           isPro={false}
           isIndia={isIndia}
+          region={region}
         />
         <PricingCard
           plan="monthly"
@@ -145,6 +150,7 @@ export default function PricingPage() {
           features={proFeatures}
           isPro={false}
           isIndia={isIndia}
+          region={region}
         />
         <PricingCard
           plan="half-yearly"
@@ -154,6 +160,7 @@ export default function PricingPage() {
           features={proFeatures}
           isPro={true}
           isIndia={isIndia}
+          region={region}
         />
         <PricingCard
           plan="annual"
@@ -163,6 +170,7 @@ export default function PricingPage() {
           features={proFeatures}
           isPro={true}
           isIndia={isIndia}
+          region={region}
         />
       </div>
 
