@@ -6,34 +6,39 @@
 //   • decryption key lives in URL fragment only — never reaches this handler.
 //   • encryptedBlob is opaque bytes — we store it, we cannot read it.
 //   • passwordSalt is returned to the client for in-browser PBKDF2 only.
-//   • passwordProof is a one-way rate-limiting token, not the decryption key.
 //   • Raw IP is never stored — hashIp() before any write.
 //
-// VIEW-COUNT GATE SEMANTICS:
-//   anonymous   → maxViews MUST equal 1 (burn-after-reading only)
-//   free        → maxViews 1–10 allowed (covers presets 1/5/10)
-//   pro:*       → maxViews 1–9999 allowed (custom input)
-//   pro:annual  → maxViews 0 (unlimited) also allowed
+// SECURITY FIXES (this version):
 //
-// RATE LIMIT HEADERS ON SUCCESS:
-//   X-RateLimit-Limit     — the daily cap for this tier
-//   X-RateLimit-Remaining — pastes remaining in the current 24 h window
-//                           (after counting this request)
-//   X-RateLimit-Reset     — Unix timestamp ms when the window fully resets
+//   FIX #3 — IV must decode to exactly 12 bytes:
+//     isValidIv() enforces /^[A-Za-z0-9_-]{16}$/ — the only valid encoding
+//     for exactly 12 bytes in URL-safe base64.
 //
-//   These are also returned in the 201 response body as rateLimitRemaining /
-//   rateLimitReset so the Zustand store can update pastesRemainingToday
-//   immediately after a successful paste, without waiting for the next
-//   useSubscription() poll.  See src/hooks/usePasteCreator.ts.
+//   FIX #4 — expirySeconds strict whitelist per tier:
+//     isAllowedExpiry() from lib/plan-limits.ts checks against a Set<number>
+//     per tier. Only exact allowed values pass.
 //
-//   WHY HEADERS TOO: Monitoring tools and the future dashboard page can read
-//   them without parsing the body.  Standard practice per IETF draft-ietf-httpapi-ratelimit.
+//   FIX #8 — sizeBytes computed server-side for PasteLog.
 //
-// ─── FIX ─────────────────────────────────────────────────────────────────────
-// Added try/catch around the Redis pipeline.exec() call (step 6) and the
-// database PasteLog write (step 7) so failures are surfaced as proper 503/500
-// responses instead of unhandled rejections that crash the Node.js worker.
-// ─────────────────────────────────────────────────────────────────────────────
+//   FIX H1 — passwordProof REMOVED:
+//     OLD: The client sent passwordProof = HMAC-SHA256(password, passwordSalt).
+//          The server stored it in Redis for server-side rate-limiting.
+//          A Redis dump gave attackers a fast (1× HMAC) offline brute-force
+//          oracle — rendering the 310,000-iteration PBKDF2 worthless.
+//     NEW: passwordProof is no longer accepted in the request body. Any request
+//          body containing passwordProof is rejected with ERR_INVALID_FIELD.
+//          The global per-paste attempt counter (pv:pwattempts:{id}) is the
+//          only brute-force gate. See verify-password/route.ts for full detail.
+//
+//   FIX S1 — passwordSalt format validation:
+//     OLD: passwordSalt was accepted as any non-empty string. A saboteur could
+//          POST a malformed or truncated salt that passes creation but causes
+//          every legitimate recipient to fail PBKDF2 derivation, effectively
+//          destroying the paste silently.
+//     NEW: passwordSalt must match /^[A-Za-z0-9_-]{43}$/ — the only valid
+//          URL-safe base64url encoding of exactly 32 bytes (the length generated
+//          by crypto.getRandomValues(new Uint8Array(32)) in the client).
+//          32 bytes → ceil(32/3)×4 with no padding = 43 chars exactly.
 //
 // RUNTIME: Node.js (uses Prisma).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,6 +59,7 @@ import {
 import {
   deriveTierFromClaims,
   getLimits,
+  isAllowedExpiry,
 } from '../../../../lib/plan-limits';
 import {
   redisKeys,
@@ -69,12 +75,40 @@ type CreateBody = {
   maxViews:       number;
   hasPassword:    boolean;
   passwordSalt?:  string;
-  passwordProof?: string;
+  /** Client-supplied plaintext size — used ONLY for tier gate, NOT for logging. */
   sizeBytes:      number;
   language:       string | null;
 };
 
 // ── Validation helpers ────────────────────────────────────────────────────────
+
+/**
+ * FIX #3: Validates that IV is exactly the URL-safe base64 encoding of 12 bytes.
+ *
+ * AES-GCM requires a 12-byte (96-bit) IV. In URL-safe base64 (no padding):
+ *   12 bytes × (4/3) = 16 chars exactly (12 is divisible by 3 so no '=' padding).
+ */
+function isValidIv(iv: string): boolean {
+  return /^[A-Za-z0-9_-]{16}$/.test(iv);
+}
+
+/**
+ * Validates encryptedBlob or passwordSalt contains only URL-safe base64 chars.
+ */
+function isValidBase64Url(s: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(s);
+}
+
+/**
+ * FIX S1: Validates passwordSalt is exactly the URL-safe base64url encoding of
+ * 32 bytes. The client generates: crypto.getRandomValues(new Uint8Array(32))
+ * then encodes with toUrlSafeBase64(), which produces exactly 43 chars:
+ *   32 bytes: 10 groups of 3 (→ 40 chars) + 2 remaining bytes (→ 3 chars) = 43 chars
+ *   No '=' padding in URL-safe base64.
+ */
+function isValidPasswordSalt(s: string): boolean {
+  return /^[A-Za-z0-9_-]{43}$/.test(s);
+}
 
 function isValidMaxViews(v: unknown): v is number {
   if (typeof v !== 'number') return false;
@@ -101,6 +135,15 @@ function sanitizeLanguage(lang: string | null): string | null {
   return ALLOWED_LANGUAGES.has(normalized) ? normalized : null;
 }
 
+/**
+ * FIX #8: Derives approximate plaintext byte count server-side from the
+ * ciphertext blob length. Used exclusively for PasteLog — not for the tier
+ * gate (which uses the client-supplied sizeBytes for belt-and-suspenders).
+ */
+function approximatePlaintextBytes(encryptedBlobLength: number): number {
+  return Math.max(1, Math.floor(encryptedBlobLength * 0.75) - 16);
+}
+
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(request: Request): Promise<Response> {
@@ -124,15 +167,54 @@ export async function POST(request: Request): Promise<Response> {
 
   const raw = body as Record<string, unknown>;
 
+  // FIX H1: Reject any request that still sends passwordProof — old clients or
+  // probing attackers. There is no valid use for this field server-side anymore.
+  if ('passwordProof' in raw) {
+    return Response.json(
+      { error: 'passwordProof is no longer accepted. Update your client.', code: 'ERR_INVALID_FIELD' },
+      { status: 400 },
+    );
+  }
+
+  // ── encryptedBlob ──────────────────────────────────────────────────────────
   if (typeof raw['encryptedBlob'] !== 'string' || raw['encryptedBlob'].length === 0) {
-    return Response.json({ error: 'encryptedBlob is required', code: 'ERR_MISSING_FIELD' }, { status: 400 });
+    return Response.json(
+      { error: 'encryptedBlob is required', code: 'ERR_MISSING_FIELD' },
+      { status: 400 },
+    );
   }
-  if (typeof raw['iv'] !== 'string' || raw['iv'].length === 0) {
-    return Response.json({ error: 'iv is required', code: 'ERR_MISSING_FIELD' }, { status: 400 });
+  if (!isValidBase64Url(raw['encryptedBlob'] as string)) {
+    return Response.json(
+      { error: 'encryptedBlob must be URL-safe base64 encoded (no +, /, or = characters)', code: 'ERR_INVALID_ENCODING' },
+      { status: 400 },
+    );
   }
-  if (typeof raw['expirySeconds'] !== 'number' || raw['expirySeconds'] <= 0) {
-    return Response.json({ error: 'expirySeconds must be a positive number', code: 'ERR_INVALID_FIELD' }, { status: 400 });
+
+  // ── IV ─────────────────────────────────────────────────────────────────────
+  if (typeof raw['iv'] !== 'string') {
+    return Response.json(
+      { error: 'iv is required', code: 'ERR_MISSING_FIELD' },
+      { status: 400 },
+    );
   }
+  if (!isValidIv(raw['iv'] as string)) {
+    return Response.json(
+      {
+        error: 'iv must be exactly 16 URL-safe base64 characters (encoding of 12 bytes for AES-GCM)',
+        code:  'ERR_INVALID_IV',
+      },
+      { status: 400 },
+    );
+  }
+
+  // ── expirySeconds ──────────────────────────────────────────────────────────
+  if (typeof raw['expirySeconds'] !== 'number' || !Number.isInteger(raw['expirySeconds']) || raw['expirySeconds'] <= 0) {
+    return Response.json(
+      { error: 'expirySeconds must be a positive integer', code: 'ERR_INVALID_FIELD' },
+      { status: 400 },
+    );
+  }
+
   if (!isValidMaxViews(raw['maxViews'])) {
     return Response.json(
       { error: 'maxViews must be an integer from 0–9999', code: 'ERR_INVALID_VIEWS' },
@@ -140,21 +222,41 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
   if (typeof raw['hasPassword'] !== 'boolean') {
-    return Response.json({ error: 'hasPassword must be a boolean', code: 'ERR_INVALID_FIELD' }, { status: 400 });
+    return Response.json(
+      { error: 'hasPassword must be a boolean', code: 'ERR_INVALID_FIELD' },
+      { status: 400 },
+    );
   }
   if (typeof raw['sizeBytes'] !== 'number' || raw['sizeBytes'] <= 0) {
-    return Response.json({ error: 'sizeBytes must be a positive number', code: 'ERR_INVALID_FIELD' }, { status: 400 });
+    return Response.json(
+      { error: 'sizeBytes must be a positive number', code: 'ERR_INVALID_FIELD' },
+      { status: 400 },
+    );
   }
   if (!isValidLanguage(raw['language'])) {
-    return Response.json({ error: 'language must be a string or null', code: 'ERR_INVALID_FIELD' }, { status: 400 });
+    return Response.json(
+      { error: 'language must be a string or null', code: 'ERR_INVALID_FIELD' },
+      { status: 400 },
+    );
   }
 
+  // ── Password fields ────────────────────────────────────────────────────────
   if (raw['hasPassword'] === true) {
+    // FIX S1: passwordSalt must be exactly 43 base64url chars (32-byte salt).
     if (typeof raw['passwordSalt'] !== 'string' || raw['passwordSalt'].length === 0) {
-      return Response.json({ error: 'passwordSalt required when hasPassword is true', code: 'ERR_MISSING_FIELD' }, { status: 400 });
+      return Response.json(
+        { error: 'passwordSalt required when hasPassword is true', code: 'ERR_MISSING_FIELD' },
+        { status: 400 },
+      );
     }
-    if (typeof raw['passwordProof'] !== 'string' || raw['passwordProof'].length === 0) {
-      return Response.json({ error: 'passwordProof required when hasPassword is true', code: 'ERR_MISSING_FIELD' }, { status: 400 });
+    if (!isValidPasswordSalt(raw['passwordSalt'] as string)) {
+      return Response.json(
+        {
+          error: 'passwordSalt must be exactly 43 URL-safe base64 characters (encoding of 32 bytes)',
+          code:  'ERR_INVALID_FIELD',
+        },
+        { status: 400 },
+      );
     }
   }
 
@@ -165,7 +267,6 @@ export async function POST(request: Request): Promise<Response> {
     maxViews:      raw['maxViews'] as number,
     hasPassword:   raw['hasPassword'] as boolean,
     passwordSalt:  typeof raw['passwordSalt'] === 'string' ? raw['passwordSalt'] : undefined,
-    passwordProof: typeof raw['passwordProof'] === 'string' ? raw['passwordProof'] : undefined,
     sizeBytes:     raw['sizeBytes'] as number,
     language:      sanitizeLanguage(raw['language'] as string | null),
   };
@@ -177,13 +278,12 @@ export async function POST(request: Request): Promise<Response> {
   const limits = getLimits(tier, planType);
 
   // ── 3. Rate limit ──────────────────────────────────────────────────────────
-  const rawIp = getClientIp(request);
-  const ipHash = await hashIp(rawIp);
-  const rateLimiter = getPasteRatelimiter(tier, planType);
+  const rawIp        = getClientIp(request);
+  const ipHash       = await hashIp(rawIp);
+  const rateLimiter  = getPasteRatelimiter(tier, planType);
   const rateLimitKey = getPasteRatelimitKey(tier, userId ?? null, ipHash);
 
   const { success: rateLimitPassed, reset, remaining, limit } = await rateLimiter.limit(rateLimitKey);
-
   if (!rateLimitPassed) {
     return rateLimitedResponse(reset, tier);
   }
@@ -193,11 +293,7 @@ export async function POST(request: Request): Promise<Response> {
 
   if (parsedBody.hasPassword && !limits.allowPassword) {
     return Response.json(
-      {
-        error: 'Password protection requires a Pro subscription.',
-        code:  'ERR_TIER_REQUIRED',
-        upgradeUrl,
-      },
+      { error: 'Password protection requires a Pro subscription.', code: 'ERR_TIER_REQUIRED', upgradeUrl },
       { status: 403 },
     );
   }
@@ -215,53 +311,44 @@ export async function POST(request: Request): Promise<Response> {
 
   if (limits.maxViews > 0 && parsedBody.maxViews > limits.maxViews) {
     return Response.json(
-      {
-        error:      `View count exceeds your plan maximum of ${limits.maxViews}.`,
-        code:       'ERR_TIER_REQUIRED',
-        upgradeUrl,
-      },
+      { error: `View count exceeds your plan maximum of ${limits.maxViews}.`, code: 'ERR_TIER_REQUIRED', upgradeUrl },
       { status: 403 },
     );
   }
 
   if (parsedBody.maxViews === 0 && !limits.allowUnlimitedViews) {
     return Response.json(
-      {
-        error:      'Unlimited views require an Annual Pro subscription.',
-        code:       'ERR_TIER_REQUIRED',
-        upgradeUrl: `${upgradeUrl}#annual`,
-      },
+      { error: 'Unlimited views require an Annual Pro subscription.', code: 'ERR_TIER_REQUIRED', upgradeUrl: `${upgradeUrl}#annual` },
       { status: 403 },
     );
   }
 
   if (parsedBody.maxViews > 10 && !limits.allowCustomViews) {
     return Response.json(
-      {
-        error:      'Custom view counts require a Pro subscription.',
-        code:       'ERR_TIER_REQUIRED',
-        upgradeUrl,
-      },
+      { error: 'Custom view counts require a Pro subscription.', code: 'ERR_TIER_REQUIRED', upgradeUrl },
       { status: 403 },
     );
   }
 
-  if (parsedBody.expirySeconds > limits.maxExpirySeconds) {
+  // FIX #4: Strict expiry whitelist per tier.
+  if (!isAllowedExpiry(parsedBody.expirySeconds, tier, planType)) {
+    const allowedKey    = tier === 'anonymous' ? 'anonymous' : tier === 'free' ? 'free' : `pro:${planType ?? 'monthly'}`;
+    const { ALLOWED_EXPIRY_SECONDS } = await import('../../../../lib/plan-limits');
+    const allowed       = [...(ALLOWED_EXPIRY_SECONDS[allowedKey] ?? new Set())];
     return Response.json(
       {
-        error: `Expiry exceeds your plan maximum of ${limits.maxExpirySeconds} seconds.`,
-        code:  'ERR_EXPIRY_EXCEEDED',
+        error:   `expirySeconds must be one of the allowed values for your plan: ${allowed.join(', ')}`,
+        code:    'ERR_INVALID_EXPIRY',
+        allowed,
       },
       { status: 400 },
     );
   }
 
+  // ── Size gates ─────────────────────────────────────────────────────────────
   if (parsedBody.sizeBytes > limits.maxPlaintextBytes) {
     return Response.json(
-      {
-        error: `Paste size exceeds your plan limit of ${limits.maxPlaintextBytes} bytes.`,
-        code:  'ERR_SIZE_EXCEEDED',
-      },
+      { error: `Paste size exceeds your plan limit of ${limits.maxPlaintextBytes} bytes.`, code: 'ERR_SIZE_EXCEEDED' },
       { status: 413 },
     );
   }
@@ -275,19 +362,19 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   // ── 5. Generate paste ID and compute expiry ────────────────────────────────
-  const id       = randomBytes(9).toString('base64url');
-  const now      = Date.now();
+  const id        = randomBytes(9).toString('base64url');
+  const now       = Date.now();
   const expiresAt = now + parsedBody.expirySeconds * 1000;
 
   // ── 6. Write to Redis atomically ───────────────────────────────────────────
-  // FIX: Wrapped in try/catch — previously an unhandled pipeline.exec() failure
-  // would crash the Node.js worker and return an unformatted 500.
+  // FIX H1: passwordProof is intentionally omitted from the record.
+  // The server stores only passwordSalt (needed for client PBKDF2 derivation).
+  // No password-derived value is ever stored alongside the ciphertext.
   const pasteRecord: RedisPasteRecord = {
     encryptedBlob: parsedBody.encryptedBlob,
     iv:            parsedBody.iv,
     hasPassword:   parsedBody.hasPassword,
     passwordSalt:  parsedBody.passwordSalt ?? null,
-    passwordProof: parsedBody.passwordProof ?? null,
     maxViews:      parsedBody.maxViews,
     expiresAt,
     language:      parsedBody.language,
@@ -295,37 +382,34 @@ export async function POST(request: Request): Promise<Response> {
 
   const pasteKey   = redisKeys.paste(id);
   const viewsKey   = redisKeys.views(id);
-  const ttlSeconds = Math.ceil(parsedBody.expirySeconds);
+  const ttlSeconds = parsedBody.expirySeconds;
 
   try {
     const pipeline = redis.pipeline();
     pipeline.set(pasteKey, JSON.stringify(pasteRecord), { ex: ttlSeconds });
-    // View counter initialised to 0; INCR in the read Lua script starts from 1.
     pipeline.set(viewsKey, 0, { ex: ttlSeconds });
     await pipeline.exec();
   } catch (redisErr) {
     console.error('[scorchpad] create — redis pipeline.exec() failed:', redisErr);
     return Response.json(
-      {
-        error: 'Failed to store paste. Please try again.',
-        code:  'ERR_STORAGE_FAILED',
-      },
+      { error: 'Failed to store paste. Please try again.', code: 'ERR_STORAGE_FAILED' },
       { status: 503 },
     );
   }
 
   // ── 7. Log paste creation to Postgres (metadata only — never content) ──────
-  // Fire-and-forget — a logging failure must not fail the paste creation.
-  // FIX: Errors now logged with structured context instead of swallowed silently.
+  // FIX #8: sizeBytes derived server-side from actual ciphertext blob length.
+  const serverSideSizeBytes = approximatePlaintextBytes(parsedBody.encryptedBlob.length);
+
   db.pasteLog.create({
     data: {
       userId:    userId ?? null,
       ipHash,
-      sizeBytes: parsedBody.sizeBytes,
+      sizeBytes: serverSideSizeBytes,
     },
   }).catch((err: unknown) => {
     console.error('[scorchpad] PasteLog write failed (non-fatal):', {
-      pasteId: id,  // log ID for tracing — not the secret content
+      pasteId: id,
       error:   err instanceof Error ? err.message : String(err),
     });
   });

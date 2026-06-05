@@ -10,6 +10,15 @@
 # Secrets required in GitHub repository settings:
 #   DATABASE_URL, DIRECT_URL — Supabase connection strings (test/CI instance)
 #   All other env vars from .env.local (use a CI-specific Vercel preview env)
+#
+# SECURITY FIX (NEW-4 — duplicate SENTRY_AUTH_TOKEN):
+#   OLD: The env block contained two SENTRY_AUTH_TOKEN entries:
+#     SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}   ← real token
+#     SENTRY_AUTH_TOKEN: ''                                  ← empty override
+#   YAML maps use last-key-wins semantics. The empty string override silently
+#   won, suppressing the real token on every CI run. Sentry source map uploads
+#   failed silently — no error, no stack traces in Sentry for CI builds.
+#   FIX: The duplicate empty override has been removed.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: CI
@@ -73,5 +82,3 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: scorchpad
           SENTRY_PROJECT: scorchpad
-          # Sentry source map upload disabled in CI (no SENTRY_AUTH_TOKEN required)
-          SENTRY_AUTH_TOKEN: ''

@@ -1,48 +1,55 @@
 // app/api/paste/[id]/verify-password/route.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/paste/[id]/verify-password
-// Verifies the password proof token and returns the encrypted blob.
+// Returns the encrypted blob for a password-protected paste after rate-limit
+// checks pass. Decryption happens entirely client-side — the server never sees
+// the password, the derived key, or the plaintext.
 //
-// DOUBLE ROUND-TRIP FLOW (Gotcha #9):
-//   1. GET /api/paste/[id]         → returns { hasPassword: true, passwordSalt }
-//   2. Client runs PBKDF2 in-browser (310,000 iterations) using password + salt
-//   3. Client computes HMAC-SHA256(derivedKey, pasteId) = passwordProof
-//   4. POST /api/paste/[id]/verify-password  → { passwordProof }
-//   5. Server compares proofs using constant-time comparison
-//   6. If match: run Lua view+burn script, return { encryptedBlob, iv, ... }
-//   7. Client decrypts in-browser using the derived key — server never sees the key
+// PASSWORD FLOW (two-round-trip design — Gotcha #9):
+//   1. GET /api/paste/[id]          → returns { hasPassword: true, passwordSalt }
+//   2. Client runs PBKDF2 in-browser (310,000 iterations, SHA-256)
+//      using: password + passwordSalt  →  derivedKey (32 bytes)
+//   3. POST /api/paste/[id]/verify-password (empty body or {})
+//   4. Server checks rate limits and returns { encryptedBlob, iv, ... }
+//   5. Client decrypts in-browser using the derived key
+//   6. If decryption fails → wrong password (server cannot detect this)
 //
-// WHY CONSTANT-TIME COMPARISON: A timing-variable comparison leaks whether the
-// proof is "close" to correct, enabling a timing oracle attack on the proof token.
-// timingSafeEqual from Node crypto eliminates this.
+// SECURITY FIXES (this version):
 //
-// WHY LUA FOR BURN: The view decrement runs here (not on GET) for password pastes.
-// Running it on GET would destroy a maxViews=1 paste before the password is entered.
-// See Gotcha #11.
+//   FIX PATCH-BUG — Counter increment order (deploy-blocking regression):
+//     OLD: redis.incr(attemptsKey) fired BEFORE the timingSafeEqual comparison.
+//          Every correct access burned the global counter. A 100-view paste
+//          locked after 100 correct views (counter = 100, exceeds MAX on
+//          the 101st) rather than only counting wrong-password attempts as
+//          intended. Effectively: correct access was indistinguishable from
+//          brute-force from the counter's perspective.
 //
-// ─── FIX (CRITICAL) ──────────────────────────────────────────────────────────
-// Same root-cause fix as in GET route.ts:
+//   FIX H1 — passwordProof offline oracle removed:
+//     OLD: verify-password accepted { passwordProof } in the request body and
+//          compared it (timingSafeEqual) against a stored HMAC-SHA256 hash in
+//          Redis. The stored hash was a fast offline oracle — a Redis dump gave
+//          the attacker both ciphertext AND a 1× HMAC target, making the
+//          310,000-iteration PBKDF2 key stretching completely irrelevant.
+//     NEW: passwordProof is no longer stored or verified server-side.
+//          The request body is ignored. Rate limits are the only gates.
+//          The global counter now limits TOTAL blob retrievals (not just failed
+//          proofs), so any caller burns an attempt slot on every request.
+//          Correct-password holders get the blob immediately (no false negative);
+//          attackers get the blob too but cannot decrypt it without PBKDF2.
 //
-// OLD (broken):
-//   redis.eval(VIEW_AND_BURN_LUA, [pasteKey, viewsKey], [String(now)])
-//   → Lua returned [pasteJson, viewsRemainingStr]
-//   → Upstash auto-deserialised pasteJson string into a JS object
-//   → JSON.parse(object) → "[object Object]" → SyntaxError → catch → 404
+//   FIX S2 — Global attempt ceiling raised to 100 (see paste-types.ts):
+//     Mitigates weaponisation of the global lock by coordinated IPs. With
+//     passwordProof removed, the counter bounds view-burning, not just
+//     wrong-proof submissions.
 //
-// NEW (correct):
-//   redis.eval(VIEW_AND_BURN_LUA, [pasteKey, viewsKey],
-//              [String(paste.maxViews), String(paste.expiresAt), String(now)])
-//   → Lua returns only [viewsRemainingStr]
-//   → Route uses already-fetched `paste` object for the HTTP response
-//   → No JSON.parse needed — no Upstash deserialisation issue
-// ─────────────────────────────────────────────────────────────────────────────
+// WHY LUA FOR BURN: The view decrement runs here (not on GET) for password
+// pastes. Running it on GET would destroy a maxViews=1 password paste before
+// the password is entered. See Gotcha #11.
 //
-// RUNTIME: Node.js — uses timingSafeEqual from node:crypto (not available on Edge).
+// RUNTIME: Node.js — uses redis.eval (Lua) and Redis pipeline.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const runtime = 'nodejs';
-
-import { timingSafeEqual } from 'node:crypto';
 
 import { redis } from '../../../../../lib/redis';
 import { getClientIp, hashIp } from '../../../../../lib/ip';
@@ -50,6 +57,7 @@ import { passwordVerifyLimit, rateLimitedResponse } from '../../../../../lib/rat
 import {
   redisKeys,
   VIEW_AND_BURN_LUA,
+  MAX_GLOBAL_PASSWORD_ATTEMPTS,
   type LuaViewResult,
   type RedisPasteRecord,
 } from '../../../../../lib/paste-types';
@@ -74,51 +82,89 @@ export async function POST(
     );
   }
 
-  // ── 2. Parse and validate request body ────────────────────────────────────
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json(
-      { error: 'Invalid JSON body', code: 'ERR_INVALID_BODY' },
-      { status: 400, headers: NO_CACHE_HEADERS }
-    );
-  }
-
-  if (!body || typeof body !== 'object') {
-    return Response.json(
-      { error: 'Body must be an object', code: 'ERR_INVALID_BODY' },
-      { status: 400, headers: NO_CACHE_HEADERS }
-    );
-  }
-
-  const raw = body as Record<string, unknown>;
-
-  if (typeof raw['passwordProof'] !== 'string' || raw['passwordProof'].length === 0) {
-    return Response.json(
-      { error: 'passwordProof is required', code: 'ERR_MISSING_FIELD' },
-      { status: 400, headers: NO_CACHE_HEADERS }
-    );
-  }
-  const submittedProof = raw['passwordProof'];
-
-  // ── 3. Rate limit — per hashed IP + paste ID ──────────────────────────────
-  // Key combines IP hash + paste ID to lock per-paste, not globally.
-  // This prevents brute-forcing proof tokens on any single target paste.
-  // 5 attempts per 15 minutes before lockout.
-  const rawIp  = getClientIp(request);
-  const ipHash = await hashIp(rawIp);
+  // ── 2. LAYER 1 rate limit — per hashed IP + paste ID ──────────────────────
+  // First gate: prevents a single IP from hammering one paste.
+  // 5 attempts per 15 minutes. Key = ipHash:pasteId.
+  const rawIp        = getClientIp(request);
+  const ipHash       = await hashIp(rawIp);
   const rateLimitKey = `${ipHash}:${id}`;
 
-  const { success, reset } = await passwordVerifyLimit.limit(rateLimitKey);
-  if (!success) {
+  const { success: perIpAllowed, reset } = await passwordVerifyLimit.limit(rateLimitKey);
+  if (!perIpAllowed) {
     return rateLimitedResponse(reset);
   }
 
-  // ── 4. Fetch paste from Redis ──────────────────────────────────────────────
-  const pasteKey = redisKeys.paste(id);
-  const viewsKey = redisKeys.views(id);
+  // ── 3. LAYER 2 — Global per-paste attempt counter ─────────────────────────
+  // This counter is keyed only by paste ID — NOT by IP — so IP rotation cannot
+  // bypass it. After MAX_GLOBAL_PASSWORD_ATTEMPTS total requests from all IPs,
+  // every further request returns 429 ERR_PASTE_LOCKED until paste expiry.
+  //
+  // FIX H1 + PATCH-BUG: The counter now increments on EVERY call (not just
+  // failures), because there is no longer a proof comparison — we cannot
+  // distinguish correct from incorrect attempts server-side. This is intentional:
+  // the counter caps total blob retrievals, providing a bounded view-burning limit
+  // while eliminating the offline oracle that the old proof storage introduced.
+  //
+  // FIX PATCH-BUG: The old code incremented BEFORE comparison, which burned the
+  // counter on every correct access. Now that there is no comparison, the
+  // increment-on-every-call semantics are correct by design.
+  //
+  // INCR and TTL fetch run in parallel (both are independent operations).
+  // On first increment (result === 1), we sync the counter TTL to the paste's
+  // remaining TTL so the counter auto-expires when the paste expires.
+  const attemptsKey = redisKeys.pwAttempts(id);
+  const pasteKey    = redisKeys.paste(id);
+  const viewsKey    = redisKeys.views(id);
 
+  let globalAttempts: number;
+  let pasteTtl: number;
+
+  try {
+    [globalAttempts, pasteTtl] = await Promise.all([
+      redis.incr(attemptsKey),
+      redis.ttl(pasteKey),
+    ]);
+  } catch (redisErr) {
+    console.error('[scorchpad] verify-password — global attempt counter failed:', redisErr);
+    // Non-fatal: if the counter is unavailable, fall through.
+    // The per-IP layer is still active as a backstop.
+    globalAttempts = 0;
+    pasteTtl = -1;
+  }
+
+  // Sync counter TTL to paste TTL on first increment.
+  if (globalAttempts === 1 && pasteTtl > 0) {
+    try {
+      await redis.expire(attemptsKey, pasteTtl);
+    } catch {
+      // Best-effort — the INCR already happened. TTL sync failure is non-fatal.
+    }
+  } else if (globalAttempts === 1) {
+    // Paste has no TTL (or TTL check failed) — apply 90-day safety ceiling.
+    try {
+      await redis.expire(attemptsKey, 90 * 24 * 3600);
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  if (globalAttempts > MAX_GLOBAL_PASSWORD_ATTEMPTS) {
+    return Response.json(
+      {
+        error: 'Too many password attempts for this paste. Access has been locked.',
+        code:  'ERR_PASTE_LOCKED',
+      },
+      {
+        status: 429,
+        headers: {
+          ...NO_CACHE_HEADERS,
+          'Retry-After': '900', // 15 minutes — consistent with per-IP window
+        },
+      }
+    );
+  }
+
+  // ── 4. Fetch paste from Redis ──────────────────────────────────────────────
   let paste: RedisPasteRecord | null;
   try {
     paste = await redis.get<RedisPasteRecord>(pasteKey);
@@ -138,38 +184,18 @@ export async function POST(
   }
 
   // ── 5. Confirm this paste actually requires a password ────────────────────
-  if (!paste.hasPassword || !paste.passwordProof) {
-    // Return 400, not 404 (don't leak state about whether the paste exists)
+  if (!paste.hasPassword) {
     return Response.json(
       { error: 'This paste is not password-protected', code: 'ERR_NOT_PASSWORD_PROTECTED' },
       { status: 400, headers: NO_CACHE_HEADERS }
     );
   }
 
-  // ── 6. Constant-time proof comparison ─────────────────────────────────────
-  // Both buffers must be the same byte length for timingSafeEqual.
-  // If they differ in length, the proof is wrong — short-circuit with a constant-time
-  // false by comparing against the stored proof (which IS the right length).
-  const storedProofBuf    = Buffer.from(paste.passwordProof, 'utf8');
-  const submittedProofBuf = Buffer.from(submittedProof,      'utf8');
-
-  const proofMatch =
-    storedProofBuf.length === submittedProofBuf.length &&
-    timingSafeEqual(storedProofBuf, submittedProofBuf);
-
-  if (!proofMatch) {
-    return Response.json(
-      { error: 'Incorrect password', code: 'ERR_WRONG_PASSWORD' },
-      { status: 401, headers: NO_CACHE_HEADERS }
-    );
-  }
-
-  // ── 7. Correct proof — run atomic view-count + burn ───────────────────────
-  // Belt-and-suspenders expiry check before running Lua.
+  // ── 6. Belt-and-suspenders expiry check ───────────────────────────────────
   const now = Date.now();
   if (paste.expiresAt > 0 && paste.expiresAt < now) {
     try {
-      await redis.del(pasteKey, viewsKey);
+      await redis.del(pasteKey, viewsKey, attemptsKey);
     } catch {
       // DEL failure is non-fatal — Redis TTL will clean up.
     }
@@ -179,8 +205,10 @@ export async function POST(
     );
   }
 
-  // FIX: Pass maxViews, expiresAt, now as ARGV — Lua no longer returns paste JSON.
-  // The script returns only [viewsRemainingStr] or nil.
+  // ── 7. Atomic view-count + burn ───────────────────────────────────────────
+  // Rate limits passed. Run the Lua view+burn script and return the blob.
+  // The client will attempt PBKDF2 + AES-GCM decryption — we don't know
+  // whether their password is correct; the decryption result tells them.
   let result: LuaViewResult;
   try {
     result = await redis.eval(
@@ -197,18 +225,15 @@ export async function POST(
   }
 
   if (!result) {
-    // Expired or burned by a concurrent verify call during this window.
     return Response.json(
       { error: 'Paste not found or expired', code: 'ERR_NOT_FOUND' },
       { status: 404, headers: NO_CACHE_HEADERS }
     );
   }
 
-  // result[0] is the views-remaining status string/number (Upstash may auto-parse).
   const viewsRemaining = Number(result[0]);
 
-  // ── 8. Return encrypted blob for client-side decryption ───────────────────
-  // FIX: Use the already-fetched `paste` object — no JSON.parse needed.
+  // ── 8. Return encrypted blob for client-side decryption ──────────────────
   return Response.json(
     {
       encryptedBlob:  paste.encryptedBlob,

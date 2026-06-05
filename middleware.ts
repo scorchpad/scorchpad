@@ -2,20 +2,36 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Clerk authentication + security headers for every request.
 //
-// SECURITY FIXES applied here:
+// SECURITY FIXES (this version):
 //
-//   1. Public static assets (pgp-key.txt, robots.txt, warrant-canary.txt,
-//      sitemap.xml) are now explicitly whitelisted as public routes so they
-//      are accessible without authentication. Previously /pgp-key.txt was
-//      protected, causing the "Sign In (Mock)" redirect on the warrant canary
-//      PGP link.
+//   FIX #2 — Nonce-based Content Security Policy (retained from prior version).
 //
-//   2. PRIVATE-KEY-KEEP-SECRET.txt guard: any path that matches the private
-//      key filename returns an explicit 403 BEFORE auth runs. Defence-in-depth
-//      — the real fix is to delete that file from /public and add it to
-//      .gitignore. Never commit private keys.
+//   FIX H3 — Sentry DSN exposure (this version):
+//     OLD: CSP connect-src included direct Sentry ingest URLs:
+//            https://*.sentry.io
+//            https://*.ingest.sentry.io
+//            https://o4511466116153344.ingest.us.sentry.io
+//          The specific org-keyed URL (o4511466116153344…) was visible in every
+//          HTTP response header. An attacker reading the CSP could identify the
+//          Sentry project and directly flood the ingest endpoint, exhausting
+//          event quota and blinding the team. The meta-baggage and baggage
+//          response headers also leaked the sentry-public_key and sentry-org_id
+//          to any HTTP observer (including browser devtools, proxies, CDN logs).
 //
-//   3. All existing security headers preserved unchanged.
+//     NEW:  All Sentry events are tunnelled through /monitoring (same-origin).
+//          instrumentation-client.ts sets tunnelRoute: '/monitoring'. The
+//          browser never connects to *.ingest.sentry.io directly. Consequently:
+//            1. All three direct Sentry ingest entries removed from connect-src.
+//               The tunnel is same-origin and covered by 'self'.
+//            2. baggage and sentry-trace response headers stripped in
+//               addSecurityHeaders() before sending to the client. These headers
+//               are added by Sentry's Next.js SDK for distributed tracing; they
+//               contain the public_key and org_id. Stripping them from responses
+//               means no HTTP observer can derive Sentry credentials from normal
+//               page loads. Sentry's server-to-server tracing is unaffected
+//               because these headers on *requests* (inbound propagation) are
+//               not touched.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse } from 'next/server';
@@ -39,18 +55,11 @@ const isPublicRoute = createRouteMatcher([
   '/api/csp-report',
   '/api/webhooks/(.*)',
   '/api/health',
-  // ── User API routes that handle anonymous access internally ───────────────
-  // These routes check auth() themselves and return tier-appropriate data for
-  // unauthenticated callers. They MUST be public here or Clerk v7 returns 404
-  // before the route handler runs — anonymous users can never get their limits.
   '/api/user/subscription',
   '/api/user/action-check',
-  // ── Static public files in /public ───────────────────────────────────────
-  // Next.js middleware runs BEFORE the static file server, so we must
-  // explicitly list these or unauthenticated requests get redirected to /sign-in.
   '/pgp-key.txt',
   '/robots.txt',
-  '/warrant-canary.txt',   // raw signed canary text (verifiable offline)
+  '/warrant-canary.txt',
   '/sitemap.xml',
   '/.well-known/(.*)',
   '/favicon.svg',
@@ -58,10 +67,6 @@ const isPublicRoute = createRouteMatcher([
 ]);
 
 // ── Private key path guard ─────────────────────────────────────────────────────
-// Defence-in-depth: if the PRIVATE key file was accidentally committed to /public,
-// block it at the edge before Clerk even runs. A 403 prevents exposure even to
-// authenticated users.
-// THE REAL FIX: delete the file from /public and add it to .gitignore.
 function isPrivateKeyPath(pathname: string): boolean {
   const lower = pathname.toLowerCase();
   return (
@@ -72,15 +77,25 @@ function isPrivateKeyPath(pathname: string): boolean {
   );
 }
 
+// ── Nonce generation ──────────────────────────────────────────────────────────
+function generateNonce(): string {
+  return crypto.randomUUID().replace(/-/g, '');
+}
+
 // ── Security headers ──────────────────────────────────────────────────────────
-function addSecurityHeaders(response: NextResponse): NextResponse {
+function addSecurityHeaders(response: NextResponse, nonce: string): NextResponse {
+  // FIX #2: Nonce-based CSP — 'unsafe-inline' removed from script-src.
+  //
+  // FIX H3: Direct Sentry ingest URLs removed from connect-src.
+  //   OLD connect-src included:
+  //     https://*.sentry.io
+  //     https://*.ingest.sentry.io
+  //     https://o4511466116153344.ingest.us.sentry.io
+  //   All three are gone. Sentry events now flow through /monitoring (same-origin,
+  //   covered by 'self'). No browser request ever goes directly to Sentry's CDN.
   const csp = [
     "default-src 'self'",
-    // FIX: Added https://challenges.cloudflare.com to script-src, frame-src, connect-src.
-    // Clerk uses Cloudflare Turnstile for bot protection on every sign-in/sign-up page.
-    // Turnstile loads an iframe + scripts from challenges.cloudflare.com.
-    // Without this, browser blocks those resources → "The CAPTCHA failed to load".
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev https://challenges.cloudflare.com",
+    `script-src 'self' 'nonce-${nonce}' https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev https://challenges.cloudflare.com`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' blob: data: https:",
     "font-src 'self' data:",
@@ -88,12 +103,10 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
     "base-uri 'self'",
     "form-action 'self' https://checkout.razorpay.com https://*.lemonsqueezy.com",
     "frame-ancestors 'none'",
-    "connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev wss://*.clerk.accounts.dev https://*.upstash.io https://o4511466116153344.ingest.us.sentry.io https://challenges.cloudflare.com",
+    // FIX H3: connect-src no longer includes any direct Sentry ingest endpoint.
+    // All Sentry traffic is tunnelled through /monitoring (same-origin = 'self').
+    "connect-src 'self' https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev wss://*.clerk.accounts.dev https://*.upstash.io https://challenges.cloudflare.com",
     "frame-src https://clerk.scorchpad.rsaatlabs.com https://*.clerk.accounts.dev https://challenges.cloudflare.com",
-    // blob: is required for Clerk v7 — it spawns Web Workers from blob: URLs for
-    // token refresh and session management. Without blob: every page load produces
-    // 3–6 CSP violations and Clerk's background workers are silently terminated,
-    // which causes stale auth state and broken session refresh.
     "worker-src 'self' blob:",
     "upgrade-insecure-requests",
     "report-uri /api/csp-report",
@@ -109,6 +122,17 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
   response.headers.set('Cross-Origin-Opener-Policy', 'same-origin');
   response.headers.set('Cross-Origin-Resource-Policy', 'same-origin');
 
+  // FIX H3: Strip Sentry distributed-tracing headers from responses.
+  // Sentry's Next.js SDK adds `sentry-trace` and `baggage` to HTTP responses
+  // as part of its OpenTelemetry trace context propagation. The `baggage` header
+  // contains sentry-public_key and sentry-org_id in plaintext, visible to any
+  // HTTP observer (browser devtools, CDN access logs, proxies, network monitors).
+  // Removing them from responses prevents credential enumeration without
+  // affecting server-side distributed tracing (inbound propagation on requests
+  // is not touched).
+  response.headers.delete('baggage');
+  response.headers.delete('sentry-trace');
+
   return response;
 }
 
@@ -116,31 +140,38 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
 export default clerkMiddleware(async (auth, request: NextRequest) => {
   const { pathname } = request.nextUrl;
 
-  // ── 1. Hard block private key paths — 403, no redirect, no leakage ────────
+  // ── 1. Hard block private key paths ───────────────────────────────────────
   if (isPrivateKeyPath(pathname)) {
     return new NextResponse(
       'Forbidden. Private keys must not be placed in the /public directory.',
       {
         status: 403,
         headers: {
-          'Content-Type': 'text/plain',
+          'Content-Type':  'text/plain',
           'Cache-Control': 'no-store',
         },
       }
     );
   }
 
-  // ── 2. Request ID for distributed tracing ─────────────────────────────────
-  const requestId = crypto.randomUUID();
+  // ── 2. Generate per-request nonce ─────────────────────────────────────────
+  const nonce = generateNonce();
+
   const requestHeaders = new Headers(request.headers);
+
+  // ── 3. Request ID for distributed tracing ─────────────────────────────────
+  const requestId = crypto.randomUUID();
   requestHeaders.set('x-request-id', requestId);
 
-  // ── 3. Route protection ───────────────────────────────────────────────────
+  // FIX #2: Pass nonce to layout.tsx via request header.
+  requestHeaders.set('x-nonce', nonce);
+
+  // ── 4. Route protection ───────────────────────────────────────────────────
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
 
-  // ── 4. Tier derivation from sessionClaims — zero DB calls ─────────────────
+  // ── 5. Tier derivation from sessionClaims — zero DB calls ─────────────────
   const { userId, sessionClaims } = await auth();
   const tierInfo = deriveTierFromClaims(
     userId ?? null,
@@ -148,14 +179,15 @@ export default clerkMiddleware(async (auth, request: NextRequest) => {
   );
 
   requestHeaders.set('x-user-tier',  tierInfo.tier);
-  requestHeaders.set('x-plan-type',  tierInfo.planType   ?? '');
+  requestHeaders.set('x-plan-type',  tierInfo.planType       ?? '');
   requestHeaders.set('x-period-end', tierInfo.currentPeriodEnd ?? '');
 
   const response = NextResponse.next({
     request: { headers: requestHeaders },
   });
 
-  return addSecurityHeaders(response);
+  // ── 6. Apply security headers with nonce ──────────────────────────────────
+  return addSecurityHeaders(response, nonce);
 });
 
 export const config = {

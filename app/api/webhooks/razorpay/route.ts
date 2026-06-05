@@ -13,8 +13,12 @@
 // PRO GRANT/REVOKE: Same pattern as the LS handler — update Postgres then
 // update Clerk publicMetadata. The subscription endpoint reads from Postgres.
 //
-// ⚠️ FLAG 1: RAZORPAY_WEBHOOK_SECRET is currently a weak string.
-//    Replace with `openssl rand -hex 32` and re-register before deployment.
+// SECURITY FIX (M2 — webhook endpoint rate limiting):
+//   OLD: No rate limiting. An attacker could flood this endpoint to force
+//        repeated HMAC-SHA256 verification + DB idempotency queries per
+//        request, exhausting the Postgres connection pool and serverless slots.
+//   NEW: 200 req/min per IP sliding window. Well above legitimate Razorpay
+//        delivery frequency. Stops replay floods and connection-pool exhaustion.
 //
 // RUNTIME: Node.js — requires Prisma + node:crypto.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +28,8 @@ export const runtime = 'nodejs';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { clerkClient }  from '@clerk/nextjs/server';
 import { db }           from '../../../../lib/db';
+import { getClientIp, hashIp } from '../../../../lib/ip';
+import { webhookLimit } from '../../../../lib/ratelimit';
 import type { PlanType } from '../../../../lib/plan-limits';
 
 // ── Razorpay webhook payload shapes (subset) ──────────────────────────────────
@@ -32,14 +38,14 @@ type RazorpaySubscriptionEntity = {
   id:            string;
   plan_id:       string;
   status:        string;
-  current_start: number;   // Unix timestamp (seconds)
-  current_end:   number;   // Unix timestamp (seconds)
+  current_start: number;
+  current_end:   number;
   notes:         Record<string, string>;
 };
 
 type RazorpayEvent = {
   event:      string;
-  created_at: number;  // Unix timestamp (seconds)
+  created_at: number;
   payload: {
     subscription?: {
       entity: RazorpaySubscriptionEntity;
@@ -49,7 +55,6 @@ type RazorpayEvent = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Map Razorpay plan_id → PlanType using env vars. */
 function planIdToPlanType(planId: string): PlanType | null {
   if (planId === process.env['RAZORPAY_MONTHLY_PLAN_ID'])     return 'monthly';
   if (planId === process.env['RAZORPAY_HALF_YEARLY_PLAN_ID']) return 'half-yearly';
@@ -57,16 +62,15 @@ function planIdToPlanType(planId: string): PlanType | null {
   return null;
 }
 
-/** Map Razorpay subscription status → internal status. */
 function normaliseRpStatus(rpStatus: string): string {
   switch (rpStatus) {
     case 'created':
     case 'authenticated':
     case 'active':    return 'active';
-    case 'pending':   return 'active';   // pending charge — treat as active
+    case 'pending':   return 'active';
     case 'halted':    return 'past_due';
     case 'cancelled': return 'cancelled';
-    case 'completed': return 'expired';  // all billing cycles used
+    case 'completed': return 'expired';
     case 'expired':   return 'expired';
     default:          return rpStatus;
   }
@@ -82,7 +86,6 @@ async function syncClerkMetadata(
   planType:    PlanType | null,
   periodEnd:   string | null
 ): Promise<void> {
-  // clerkClient() returns Promise<ClerkClient> in @clerk/nextjs v7 — must await
   const clerk = await clerkClient();
   await clerk.users.updateUserMetadata(clerkUserId, {
     publicMetadata: {
@@ -96,6 +99,17 @@ async function syncClerkMetadata(
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 export async function POST(request: Request): Promise<Response> {
+  // FIX M2: Rate limit before any expensive work (HMAC, DB queries).
+  const rawIp  = getClientIp(request);
+  const ipHash = await hashIp(rawIp);
+  const { success: withinLimit } = await webhookLimit.limit(ipHash);
+  if (!withinLimit) {
+    return Response.json(
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': '60' } }
+    );
+  }
+
   // ── 1. Read raw body ───────────────────────────────────────────────────────
   const rawBody = await request.text();
 
@@ -111,7 +125,6 @@ export async function POST(request: Request): Promise<Response> {
     .update(rawBody)
     .digest('hex');
 
-  // timingSafeEqual requires same-length buffers — compare hex strings (always 64 chars)
   const sigMatch =
     receivedSig.length === 64 &&
     computedSig.length === 64 &&
@@ -131,12 +144,10 @@ export async function POST(request: Request): Promise<Response> {
 
   const subscription = event.payload.subscription?.entity;
   if (!subscription) {
-    // Non-subscription event (e.g. payment.captured) — acknowledge, skip
     return Response.json({ received: true, skipped: 'non_subscription_event' });
   }
 
   // ── 4. Idempotency check ───────────────────────────────────────────────────
-  // Razorpay has no per-event UUID. Construct a stable key from event + sub ID + timestamp.
   const eventId = `rp:${event.event}:${subscription.id}:${event.created_at}`;
   const alreadyProcessed = await db.webhookEvent.findUnique({ where: { eventId } });
   if (alreadyProcessed) {
@@ -165,7 +176,7 @@ export async function POST(request: Request): Promise<Response> {
   const status     = normaliseRpStatus(subscription.status);
   const isPro      = isProStatus(status);
   const periodDate = subscription.current_end
-    ? new Date(subscription.current_end * 1000)   // seconds → ms
+    ? new Date(subscription.current_end * 1000)
     : null;
   const periodIso  = periodDate?.toISOString() ?? null;
 
@@ -200,7 +211,6 @@ export async function POST(request: Request): Promise<Response> {
       }
 
       case 'subscription.charged': {
-        // Successful renewal — update period end
         await db.subscription.updateMany({
           where: { razorpaySubscriptionId: subscription.id },
           data:  { status: 'active', currentPeriodEnd: periodDate },
@@ -215,7 +225,6 @@ export async function POST(request: Request): Promise<Response> {
           where: { razorpaySubscriptionId: subscription.id },
           data:  { status: normaliseRpStatus(subscription.status), currentPeriodEnd: periodDate },
         });
-        // Access continues until period end on cancellation
         const stillActive = event.event === 'subscription.cancelled'
           ? (periodDate ? periodDate > new Date() : false)
           : false;
@@ -224,12 +233,10 @@ export async function POST(request: Request): Promise<Response> {
       }
 
       case 'subscription.halted': {
-        // Payment failed — mark as past_due but keep access until period end
         await db.subscription.updateMany({
           where: { razorpaySubscriptionId: subscription.id },
           data:  { status: 'past_due' },
         });
-        // Keep isPro = true during the grace period; webhook will fire again on recovery
         break;
       }
 
@@ -246,14 +253,12 @@ export async function POST(request: Request): Promise<Response> {
         break;
     }
 
-    // ── 8. Record for idempotency ───────────────────────────────────────────
     await db.webhookEvent.create({
       data: { eventId, provider: 'razorpay', eventType: event.event },
     });
 
   } catch (err) {
     console.error('[scorchpad/webhooks/razorpay] Error on event', event.event, err instanceof Error ? err.message : err);
-    // Do NOT record event — let Razorpay retry
     return Response.json({ error: 'Processing failed' }, { status: 500 });
   }
 

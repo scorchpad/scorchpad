@@ -7,18 +7,37 @@
 //   X-Vercel-IP-Country: IN  →  Razorpay       (monthly, half-yearly, annual)
 //   All other countries      →  Lemon Squeezy  (monthly, half-yearly, annual)
 //
-// Half-yearly is available globally via both providers.
-// Razorpay handles Indian users; Lemon Squeezy handles international users.
-// Ensure LEMONSQUEEZY_HALF_YEARLY_VARIANT_ID is set and the LS variant is
-// correctly priced before surfacing this plan on the pricing page internationally.
-//
-// The country check is server-side. Client-side locale detection is spoofable
-// and display-only — routing must not be delegated to the client.
+// NOTE (M3 — geo routing spoofing):
+//   x-vercel-ip-country shares the same root vulnerability as C1: an attacker
+//   who discovers the raw Vercel origin URL can bypass Cloudflare and inject
+//   any country header, routing themselves to whichever payment provider they
+//   prefer. The application-layer fix in lib/ip.ts (Cloudflare IP validation)
+//   mitigates this for all IP-derived headers. The correct infrastructure-level
+//   fix is Cloudflare Authenticated Origin Pulls (mTLS), which prevents any
+//   direct Vercel access entirely.
 //
 // NO OPTIMISTIC PRO ACCESS:
 //   This route returns a checkout URL only. Pro access is granted exclusively
 //   by the webhook handlers after payment is confirmed by the provider.
-//   The client polls GET /api/user/subscription to detect the upgrade.
+//
+// SECURITY FIXES (this version):
+//
+//   FIX L1 — Rate limit (NEW):
+//     OLD: No rate limiting. A tight loop could create Razorpay subscription
+//          objects or LemonSqueezy checkout sessions on every call, burning
+//          provider API quota and potentially triggering fraud flags.
+//     NEW: 10 req/min per userId sliding window. More than enough for any
+//          legitimate user flow (one click → one URL), allows retries on
+//          transient errors.
+//
+//   FIX S3 — Subscription pre-flight check (NEW):
+//     OLD: No check for existing active subscription before creating a new
+//          checkout session. A user with an active subscription could create
+//          a parallel pending subscription at the provider, leading to double-
+//          charging, failed reconciliation, and confusing state in the DB.
+//     NEW: Check for an active or pending subscription in Postgres before
+//          calling the provider API. If one exists, return 409 ERR_ALREADY_SUBSCRIBED
+//          so the client can redirect to account management instead.
 //
 // RUNTIME: Node.js — Razorpay SDK uses Node.js internals (crypto, https).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,6 +48,10 @@ import Razorpay from 'razorpay';
 import { lemonSqueezySetup, createCheckout } from '@lemonsqueezy/lemonsqueezy.js';
 import { auth, currentUser } from '@clerk/nextjs/server';
 import type { Subscriptions } from 'razorpay/dist/types/subscriptions';
+
+import { db }           from '../../../../lib/db';
+import { getClientIp, hashIp } from '../../../../lib/ip';
+import { checkoutLimit } from '../../../../lib/ratelimit';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -61,16 +84,16 @@ function getLsVariantId(plan: PlanDuration): number {
   return raw ? Number(raw) : 0;
 }
 
-/**
- * Total billing cycles for Razorpay subscriptions.
- * Set high enough that the subscription never terminates before the customer
- * chooses to cancel.
- */
 const RAZORPAY_TOTAL_COUNT: Record<PlanDuration, number> = {
-  'monthly':     600,  // 50 years
-  'half-yearly': 120,  // 60 years
-  'annual':      50,   // 50 years
+  'monthly':     600,
+  'half-yearly': 120,
+  'annual':      50,
 };
+
+// ── Active subscription statuses that block new checkout ─────────────────────
+// 'cancelled' and 'expired' are intentionally excluded — a cancelled user
+// reaching end-of-period or an expired subscriber should be able to re-subscribe.
+const BLOCKING_STATUSES = new Set(['active', 'past_due']);
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
@@ -81,6 +104,21 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json(
       { error: 'Sign in to subscribe', code: 'ERR_UNAUTHENTICATED' },
       { status: 401 }
+    );
+  }
+
+  // FIX L1: Rate limit per userId before any provider API call.
+  const rawIp  = getClientIp(request);
+  const ipHash = await hashIp(rawIp);
+  // Use userId as rate-limit key (stable across IP changes for authenticated users).
+  // Fall back to ipHash if userId is somehow unavailable (shouldn't happen after
+  // the auth() check above, but belt-and-suspenders).
+  const rlKey = userId ?? ipHash;
+  const { success: withinLimit } = await checkoutLimit.limit(rlKey);
+  if (!withinLimit) {
+    return Response.json(
+      { error: 'Too many checkout requests. Please wait a moment and try again.', code: 'ERR_RATE_LIMITED' },
+      { status: 429, headers: { 'Retry-After': '60' } }
     );
   }
 
@@ -104,13 +142,28 @@ export async function POST(request: Request): Promise<Response> {
   }
   const plan = raw['plan'];
 
+  // FIX S3: Check for an existing active subscription before creating a new
+  // checkout session. This prevents double-subscription and duplicate charges.
+  const dbUser = await db.user.findUnique({
+    where:   { clerkId: userId },
+    include: { subscription: { select: { status: true } } },
+  });
+
+  if (dbUser?.subscription && BLOCKING_STATUSES.has(dbUser.subscription.status)) {
+    return Response.json(
+      {
+        error: 'You already have an active subscription. Manage it from your account settings.',
+        code:  'ERR_ALREADY_SUBSCRIBED',
+      },
+      { status: 409 }
+    );
+  }
+
   // ── 3. Resolve user email ──────────────────────────────────────────────────
   const clerkUser = await currentUser();
   const email = clerkUser?.emailAddresses[0]?.emailAddress ?? '';
 
   // ── 4. Geo routing ─────────────────────────────────────────────────────────
-  // X-Vercel-IP-Country is injected by Vercel's edge network in production.
-  // Falls back to '' in local dev → routes to Lemon Squeezy (safe default).
   const country = request.headers.get('x-vercel-ip-country') ?? '';
   const isIndia  = country.toUpperCase() === 'IN';
 
@@ -180,7 +233,7 @@ async function handleRazorpayCheckout(
   }
 }
 
-// ── Lemon Squeezy checkout (international users — all three plans) ────────────
+// ── Lemon Squeezy checkout (international users) ──────────────────────────────
 
 async function handleLsCheckout(
   plan:   PlanDuration,

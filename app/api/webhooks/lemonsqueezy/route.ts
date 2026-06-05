@@ -17,8 +17,14 @@
 // DELAY EXPECTATION: 10–60 s between payment and webhook delivery is normal
 // per LS documentation. Do NOT treat delay as failure.
 //
-// ⚠️ FLAG 1: LEMONSQUEEZY_WEBHOOK_SECRET is currently a weak string.
-//    Replace with `openssl rand -hex 32` and re-register before deployment.
+// SECURITY FIX (M2 — webhook endpoint rate limiting):
+//   OLD: No rate limiting. An attacker could flood this endpoint to force
+//        repeated HMAC-SHA256 verification + DB idempotency queries per
+//        request, exhausting the Postgres connection pool and serverless slots.
+//   NEW: 200 req/min per IP sliding window. Well above legitimate LS delivery
+//        frequency (providers retry at most every few seconds on failure, and
+//        deliver each event once on success). Stops replay floods and
+//        connection-pool exhaustion attacks.
 //
 // RUNTIME: Node.js — requires Prisma + node:crypto.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,15 +35,17 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { clerkClient }  from '@clerk/nextjs/server';
 import { Resend }       from 'resend';
 import { db }           from '../../../../lib/db';
+import { getClientIp, hashIp } from '../../../../lib/ip';
+import { webhookLimit } from '../../../../lib/ratelimit';
 import type { PlanType } from '../../../../lib/plan-limits';
 
 // ── LS webhook payload shapes (subset) ───────────────────────────────────────
 
 type LsSubscriptionAttributes = {
-  status:              string;      // active | cancelled | expired | paused | past_due | unpaid | trial
+  status:              string;
   variant_id:          number;
   order_id:            number;
-  current_period_end:  string | null;  // ISO-8601
+  current_period_end:  string | null;
   ends_at:             string | null;
 };
 
@@ -57,7 +65,6 @@ type LsEvent = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Map LS variant ID → PlanType using env vars. Returns null for unknown variants. */
 function variantToPlanType(variantId: number): PlanType | null {
   const monthly = Number(process.env['LEMONSQUEEZY_MONTHLY_VARIANT_ID']      ?? 0);
   const halfYr  = Number(process.env['LEMONSQUEEZY_HALF_YEARLY_VARIANT_ID']  ?? 0);
@@ -69,32 +76,28 @@ function variantToPlanType(variantId: number): PlanType | null {
   return null;
 }
 
-/** Map LS subscription status → our internal status. */
 function normaliseLsStatus(lsStatus: string): string {
   switch (lsStatus) {
-    case 'active':   return 'active';
+    case 'active':    return 'active';
     case 'cancelled': return 'cancelled';
-    case 'expired':  return 'expired';
-    case 'paused':   return 'paused';
+    case 'expired':   return 'expired';
+    case 'paused':    return 'paused';
     case 'past_due':
-    case 'unpaid':   return 'past_due';
-    default:         return lsStatus;
+    case 'unpaid':    return 'past_due';
+    default:          return lsStatus;
   }
 }
 
-/** Whether this status means the user is currently Pro. */
 function isProStatus(status: string): boolean {
   return status === 'active';
 }
 
-/** Update Clerk publicMetadata to reflect subscription state. */
 async function syncClerkMetadata(
   clerkUserId: string,
   isPro:       boolean,
   planType:    PlanType | null,
   periodEnd:   string | null
 ): Promise<void> {
-  // clerkClient() returns Promise<ClerkClient> in @clerk/nextjs v7 — must await
   const clerk = await clerkClient();
   await clerk.users.updateUserMetadata(clerkUserId, {
     publicMetadata: {
@@ -105,7 +108,6 @@ async function syncClerkMetadata(
   });
 }
 
-/** Send a welcome email via Resend on first activation. Fire-and-forget. */
 function sendWelcomeEmail(toEmail: string, planType: PlanType): void {
   const resend    = new Resend(process.env['RESEND_API_KEY'] ?? '');
   const fromEmail = process.env['RESEND_FROM_EMAIL'] ?? 'noreply@scorchpad.rsaatlabs.com';
@@ -134,7 +136,6 @@ function sendWelcomeEmail(toEmail: string, planType: PlanType): void {
       <p>— The Rsaat Labs team</p>
     `,
   }).catch((err: unknown) => {
-    // Welcome email failure must never block the webhook response
     console.error('[scorchpad/webhooks/ls] Resend error:', err instanceof Error ? err.message : err);
   });
 }
@@ -142,6 +143,19 @@ function sendWelcomeEmail(toEmail: string, planType: PlanType): void {
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 export async function POST(request: Request): Promise<Response> {
+  // FIX M2: Rate limit before any expensive work (HMAC, DB queries).
+  // Use 200/min per IP — well above legitimate LS delivery rates.
+  const rawIp  = getClientIp(request);
+  const ipHash = await hashIp(rawIp);
+  const { success: withinLimit } = await webhookLimit.limit(ipHash);
+  if (!withinLimit) {
+    // Return 429 here (unlike csp-report) — LS delivery should back off on 429.
+    return Response.json(
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': '60' } }
+    );
+  }
+
   // ── 1. Read raw body — must happen before any parsing ─────────────────────
   const rawBody = await request.text();
 
@@ -176,7 +190,6 @@ export async function POST(request: Request): Promise<Response> {
   const eventName = event.meta.event_name;
 
   // ── 4. Idempotency check ───────────────────────────────────────────────────
-  // If this event_id is already in WebhookEvent, it's a retry we already processed.
   const alreadyProcessed = await db.webhookEvent.findUnique({ where: { eventId } });
   if (alreadyProcessed) {
     return Response.json({ received: true, duplicate: true });
@@ -188,7 +201,6 @@ export async function POST(request: Request): Promise<Response> {
     : null;
 
   if (!clerkUserId) {
-    // Test webhooks from the LS dashboard won't have custom_data — acknowledge, don't process
     console.warn('[scorchpad/webhooks/ls] No userId in custom_data for event:', eventName);
     await db.webhookEvent.create({
       data: { eventId, provider: 'lemonsqueezy', eventType: eventName },
@@ -199,7 +211,6 @@ export async function POST(request: Request): Promise<Response> {
   // ── 6. Find User in Postgres ───────────────────────────────────────────────
   const user = await db.user.findUnique({ where: { clerkId: clerkUserId } });
   if (!user) {
-    // Clerk webhook may not have fired yet — return 500 so LS retries
     console.warn('[scorchpad/webhooks/ls] User not found in DB for clerkId:', clerkUserId);
     return Response.json({ error: 'User not found; retry expected' }, { status: 500 });
   }
@@ -223,7 +234,6 @@ export async function POST(request: Request): Promise<Response> {
           break;
         }
 
-        // Upsert subscription record
         await db.subscription.upsert({
           where:  { lemonSqueezySubscriptionId: lsSubId },
           create: {
@@ -242,10 +252,8 @@ export async function POST(request: Request): Promise<Response> {
           },
         });
 
-        // Sync Clerk publicMetadata so JWT eventually reflects new state
         await syncClerkMetadata(clerkUserId, isPro, planType, periodEnd);
 
-        // Welcome email only on first creation
         if (eventName === 'subscription_created' && isPro) {
           sendWelcomeEmail(user.email, planType);
         }
@@ -257,7 +265,6 @@ export async function POST(request: Request): Promise<Response> {
           where: { lemonSqueezySubscriptionId: lsSubId },
           data:  { status: 'cancelled', currentPeriodEnd: periodDate },
         });
-        // Access remains until period end — isPro stays true until then
         const stillActive = periodDate ? periodDate > new Date() : false;
         await syncClerkMetadata(clerkUserId, stillActive, planType, periodEnd);
         break;
@@ -268,13 +275,11 @@ export async function POST(request: Request): Promise<Response> {
           where: { lemonSqueezySubscriptionId: lsSubId },
           data:  { status: 'expired', currentPeriodEnd: periodDate },
         });
-        // Period has ended — revoke Pro access
         await syncClerkMetadata(clerkUserId, false, null, null);
         break;
       }
 
       case 'subscription_payment_success': {
-        // Renewal — update the period end
         await db.subscription.updateMany({
           where: { lemonSqueezySubscriptionId: lsSubId },
           data:  { status: 'active', currentPeriodEnd: periodDate },
@@ -284,19 +289,15 @@ export async function POST(request: Request): Promise<Response> {
       }
 
       default:
-        // Acknowledge unknown events without processing to prevent retries
         break;
     }
 
-    // ── 8. Record event for idempotency ─────────────────────────────────────
     await db.webhookEvent.create({
       data: { eventId, provider: 'lemonsqueezy', eventType: eventName },
     });
 
   } catch (err) {
     console.error('[scorchpad/webhooks/ls] Processing error for event', eventName, err instanceof Error ? err.message : err);
-    // Return 500 so LS retries on transient errors
-    // Do NOT record the event — let LS retry
     return Response.json({ error: 'Processing failed' }, { status: 500 });
   }
 

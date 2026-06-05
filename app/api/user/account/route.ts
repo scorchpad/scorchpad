@@ -13,6 +13,15 @@
 // first means the worst case on partial failure is they keep access briefly
 // but aren't charged again.
 //
+// SECURITY FIX (NEW-2 — rate limit on account deletion):
+//   OLD: DELETE /api/user/account had no rate limiting. Each call attempts to
+//        cancel the active subscription at the payment provider (Razorpay or
+//        LemonSqueezy) before deleting from Postgres. Flooding this endpoint
+//        bursts the payment provider's API rate limit, which can cause legitimate
+//        cancellations from other users to fail with provider-side 429s.
+//   NEW: 5 req/min per userId sliding window. Allows transient-error retries
+//        (the UI may retry on a 5xx from Clerk/Postgres) without enabling abuse.
+//
 // PASTE BLOBS: Paste content lives in Redis with TTL — it expires naturally.
 // We do not enumerate Redis keys here because we never store a userId→pasteId
 // index (privacy by design: the server is intentionally blind to paste ownership).
@@ -26,6 +35,7 @@ import { auth, clerkClient } from '@clerk/nextjs/server';
 import Razorpay from 'razorpay';
 import { lemonSqueezySetup, cancelSubscription } from '@lemonsqueezy/lemonsqueezy.js';
 import { db } from '../../../../lib/db';
+import { accountDeleteLimit } from '../../../../lib/ratelimit';
 
 export async function DELETE(): Promise<Response> {
   // ── 1. Auth required ───────────────────────────────────────────────────────
@@ -34,6 +44,15 @@ export async function DELETE(): Promise<Response> {
     return Response.json(
       { error: 'Authentication required', code: 'ERR_UNAUTHENTICATED' },
       { status: 401 }
+    );
+  }
+
+  // FIX NEW-2: Rate limit per userId to prevent payment provider API bursting.
+  const { success: withinLimit } = await accountDeleteLimit.limit(userId);
+  if (!withinLimit) {
+    return Response.json(
+      { error: 'Too many requests. Please wait before retrying.', code: 'ERR_RATE_LIMITED' },
+      { status: 429, headers: { 'Retry-After': '60' } }
     );
   }
 
@@ -60,7 +79,6 @@ export async function DELETE(): Promise<Response> {
         lemonSqueezySetup({ apiKey });
         await cancelSubscription(sub.lemonSqueezySubscriptionId);
       } catch (err) {
-        // Log but do not block erasure — user's right to be forgotten takes precedence
         console.error('[scorchpad/account/delete] LS cancellation failed:', err instanceof Error ? err.message : err);
       }
     }
@@ -79,7 +97,6 @@ export async function DELETE(): Promise<Response> {
   }
 
   // ── 4. Delete from Postgres ────────────────────────────────────────────────
-  // Subscription and PasteLog rows cascade via onDelete: Cascade in schema.
   try {
     await db.user.delete({ where: { clerkId: userId } });
   } catch (err) {
@@ -91,13 +108,10 @@ export async function DELETE(): Promise<Response> {
   }
 
   // ── 5. Delete from Clerk ───────────────────────────────────────────────────
-  // This invalidates all active sessions immediately.
   try {
     const clerk = await clerkClient();
     await clerk.users.deleteUser(userId);
   } catch (err) {
-    // Postgres is already clean — log Clerk failure but return success.
-    // The user's data is gone; Clerk orphan cleanup can be handled manually.
     console.error('[scorchpad/account/delete] Clerk deletion failed:', err instanceof Error ? err.message : err);
   }
 

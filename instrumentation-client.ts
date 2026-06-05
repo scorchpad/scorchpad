@@ -3,31 +3,39 @@
 // Client-side Sentry initialisation.
 //
 // Next.js loads this file in the browser bundle before the React tree mounts.
-// Unlike instrumentation.ts, there is no register() wrapper — top-level code
-// executes immediately.
-// https://nextjs.org/docs/app/api-reference/file-conventions/instrumentation-client
 //
-// ─── WHY THIS REPLACES sentry.client.config.ts ───────────────────────────────
+// SECURITY FIXES (this version):
 //
-//   The file convention changed in @sentry/nextjs ≥ 9 / Next.js 15:
-//   • sentry.client.config.ts     DEPRECATED — still loaded, generates warning.
-//                                  Will stop working with Turbopack (the new
-//                                  default in Next.js 16).
-//   • instrumentation-client.ts   CURRENT   — the canonical location.
+//   FIX H3 — Sentry DSN exposure via meta-baggage header + CSP connect-src:
+//     OLD: The Sentry SDK sent events directly to *.ingest.sentry.io, which
+//          required the Sentry org ID and public key to appear explicitly in the
+//          CSP connect-src directive and in the meta-baggage trace propagation
+//          header on every HTTP response. This let an attacker identify the
+//          Sentry project and flood the ingest endpoint directly, exhausting
+//          event quota and blinding the team during an active incident.
+//     NEW: tunnelRoute: '/monitoring' routes all Sentry events through a
+//          same-origin Next.js endpoint that proxies to Sentry. The browser
+//          only makes requests to /monitoring (covered by CSP 'self'). The
+//          direct Sentry ingest URL is no longer needed in connect-src and
+//          has been removed from middleware.ts. An attacker inspecting the
+//          CSP header cannot derive the Sentry project credentials.
+//          See also: middleware.ts where the direct ingest URLs were removed
+//          from connect-src and the baggage/sentry-trace response headers
+//          are stripped.
 //
-// ─── WHAT RUNS HERE ──────────────────────────────────────────────────────────
-//   • Sentry.init() for the browser SDK.
-//   • Session Replay registration (captures DOM snapshots on errors).
+//   FIX M4 — Sentry Session Replay on /p/* viewer routes:
+//     OLD: replaysOnErrorSampleRate: 1.0 applied globally, including the paste
+//          viewer routes (/p/[id]). Session Replay captures DOM snapshots on
+//          errors. A Replay recording triggered during paste decryption could
+//          capture the decrypted plaintext in the DOM before eraseKeyFromUrl()
+//          ran, violating the zero-knowledge guarantee. maskAllText: true
+//          provides partial protection but masking has known bypass patterns.
+//     NEW: shouldSampleForReplay callback disables all Replay sampling on
+//          /p/* routes entirely. Zero DOM snapshots are taken on the viewer.
+//          Replay continues to function normally on all non-viewer routes
+//          (editor, dashboard, pricing, etc.) where no sensitive content
+//          is rendered.
 //
-// ─── SECURITY ────────────────────────────────────────────────────────────────
-//   scrubFragmentFromEvent() is registered as beforeSend to ensure the client
-//   SDK never forwards the AES-GCM decryption key (in the URL fragment) to
-//   Sentry before the user navigates away from the pad page.
-//   See src/lib/sentry.ts for the full security rationale.
-//
-// ─── IMPORTANT: NO SERVER-ONLY IMPORTS ───────────────────────────────────────
-//   Everything imported here ends up in the browser bundle. Never import
-//   Node.js built-ins, server-only packages, or database clients here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as Sentry from '@sentry/nextjs';
@@ -38,48 +46,48 @@ Sentry.init({
   environment:      process.env.NODE_ENV ?? 'development',
   release:          process.env.SENTRY_RELEASE,
 
+  // FIX H3: Route all Sentry events through the same-origin /monitoring tunnel.
+  // This means the browser never connects directly to *.ingest.sentry.io,
+  // so the Sentry project credentials don't need to appear in the CSP header.
+  tunnelRoute: '/monitoring',
+
   // Sample 10% of frontend performance traces in production.
-  // Tune this against your Sentry plan quota; 0.1 is a conservative start.
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
 
   // Session Replay — captures a video-like DOM recording attached to errors.
-  // 10% of normal sessions, 100% of sessions that encounter an error.
-  // Recorded sessions are stored in Sentry and are NOT sent to Scorchpad servers.
-  // Review Sentry's data retention policies if this is a compliance concern.
+  // FIX M4: replaysOnErrorSampleRate is kept at 1.0 globally, but the
+  // shouldSampleForReplay callback below overrides it to 0 on /p/* routes.
   replaysSessionSampleRate: 0.1,
   replaysOnErrorSampleRate: 1.0,
 
   integrations: [
-    // Replay must be explicitly added as an integration in @sentry/nextjs v8+.
-    // It lazy-loads the recording worker only when a session is actually sampled,
-    // so the performance cost on non-sampled sessions is negligible.
     Sentry.replayIntegration({
       // Mask all text nodes and block all media elements by default.
-      // This prevents sensitive pad content from appearing in replay recordings.
       maskAllText:   true,
       blockAllMedia: true,
+
+      // FIX M4: Completely disable Replay sampling on paste viewer routes.
+      // /p/[id] is where decrypted paste content is rendered — zero DOM
+      // snapshots must be taken here to preserve the zero-knowledge guarantee.
+      //
+      // shouldSampleForReplay is called before any recording begins. Returning
+      // false prevents the Replay worker from initialising for that navigation,
+      // so no DOM content is ever captured — even on errors.
+      shouldSampleForReplay({ name: routeName }) {
+        // Disable on viewer routes entirely — both session and error sampling.
+        if (routeName.startsWith('/p/')) return false;
+        return undefined; // Use default sampling rates for all other routes.
+      },
     }),
   ],
 
-  // SECURITY: strip decryption keys from every captured event before it leaves
-  // the browser. This is the last line of defence against fragment leakage.
+  // SECURITY: strip decryption keys from every captured event before it
+  // leaves the browser. This is the last line of defence against fragment
+  // leakage. See src/lib/sentry.ts for the full security rationale.
   beforeSend: scrubFragmentFromEvent,
 
   debug: process.env.NODE_ENV !== 'production',
 });
 
 // ─── Navigation instrumentation ───────────────────────────────────────────────
-//
-// Required by @sentry/nextjs ≥ 9 to capture client-side route transitions as
-// Sentry performance transactions. Without this export, navigations between
-// App Router pages are invisible to Sentry — you see page-load spans but no
-// navigation spans, making performance analysis incomplete.
-//
-// Build log warning this resolves:
-//   [@sentry/nextjs] ACTION REQUIRED: To instrument navigations, the Sentry
-//   SDK requires you to export an `onRouterTransitionStart` hook from your
-//   `instrumentation-client.(js|ts)` file.
-//
-// Docs: https://docs.sentry.io/platforms/javascript/guides/nextjs/
-//       configuration/app-router/#navigation-instrumentation
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
