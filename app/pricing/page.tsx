@@ -3,11 +3,6 @@ import { PricingCard } from '../../src/components/pricing/PricingCard';
 import { useState } from 'react';
 import { Check, X, Shield, Zap, Eye, Lock, Flame } from 'lucide-react';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FEATURE FLAG: set to true once Lemon Squeezy is approved and live
-// ─────────────────────────────────────────────────────────────────────────────
-const INTERNATIONAL_PAYMENTS_ENABLED = false;
-
 const COMPARISON = [
   { feature: 'Zero-knowledge encryption', scorchpad: true, pastebin: false, privatebin: true, onetimesecret: false },
   { feature: 'AES-256-GCM + PBKDF2 (310k iterations)', scorchpad: true, pastebin: false, privatebin: 'partial', onetimesecret: false },
@@ -103,27 +98,19 @@ export default function PricingPage() {
 
       {/* ── Region tab switcher ── */}
       <div className="flex items-center gap-2 mb-12 bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl p-1">
-        {/* International tab — disabled until LS approved */}
+        {/* International tab — Lemon Squeezy (USD) */}
         <button
-          disabled={!INTERNATIONAL_PAYMENTS_ENABLED}
-          onClick={() => INTERNATIONAL_PAYMENTS_ENABLED && setRegion('intl')}
-          className={`relative px-5 py-2.5 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-all ${
-            region === 'intl' && INTERNATIONAL_PAYMENTS_ENABLED
+          onClick={() => setRegion('intl')}
+          className={`px-5 py-2.5 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-all ${
+            region === 'intl'
               ? 'bg-white dark:bg-[#111] text-gray-900 dark:text-white shadow-sm border border-gray-200 dark:border-white/10'
-              : INTERNATIONAL_PAYMENTS_ENABLED
-              ? 'text-gray-500 dark:text-white/40 hover:text-gray-700 dark:hover:text-white/60 cursor-pointer'
-              : 'text-gray-400 dark:text-white/20 cursor-not-allowed'
+              : 'text-gray-500 dark:text-white/40 hover:text-gray-700 dark:hover:text-white/60 cursor-pointer'
           }`}
         >
           $
-          {!INTERNATIONAL_PAYMENTS_ENABLED && (
-            <span className="ml-2 text-[9px] font-bold text-indigo-500 dark:text-orange-400 uppercase tracking-widest">
-              Coming Soon
-            </span>
-          )}
         </button>
 
-        {/* India tab — always active */}
+        {/* India tab — Razorpay (INR) */}
         <button
           onClick={() => setRegion('india')}
           className={`px-5 py-2.5 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-all ${
@@ -138,16 +125,6 @@ export default function PricingPage() {
           </span>
         </button>
       </div>
-
-      {/* ── International coming soon banner ── */}
-      {!INTERNATIONAL_PAYMENTS_ENABLED && (
-        <div className="w-full max-w-2xl mx-auto px-4 mb-10">
-          <div className="flex items-center gap-3 px-5 py-3.5 rounded-xl border border-indigo-200 dark:border-orange-500/20 bg-indigo-50/50 dark:bg-orange-500/5 text-[11px] font-mono text-indigo-700 dark:text-orange-400 tracking-wide">
-            <span className="shrink-0">⚡</span>
-            International payments ($) are coming soon — currently processing our payment provider approval. Indian users can subscribe right now via UPI, NetBanking, or Card.
-          </div>
-        </div>
-      )}
 
       {/* ── Pricing cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 w-full max-w-7xl mx-auto px-4">
@@ -287,7 +264,7 @@ export default function PricingPage() {
         </div>
 
         <p className="text-[10px] font-mono text-gray-400 dark:text-white/25 mt-4 text-center tracking-wide">
-          Comparison based on publicly documented features as of May 2026. "Partial" = feature exists but with meaningful limitations.
+          Comparison based on publicly documented features as of May 2026. &quot;Partial&quot; = feature exists but with meaningful limitations.
         </p>
       </div>
 
@@ -310,4 +287,3 @@ export default function PricingPage() {
     </div>
   );
 }
-
