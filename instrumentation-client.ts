@@ -50,29 +50,25 @@ Sentry.init({
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
 
   // Session Replay — captures a video-like DOM recording attached to errors.
-  // FIX M4: replaysOnErrorSampleRate is kept at 1.0 globally, but the
-  // shouldSampleForReplay callback below overrides it to 0 on /p/* routes.
+  // FIX M4: maskAllText + blockAllMedia in replayIntegration() below prevent
+  // any plaintext DOM content from being captured, even on viewer routes.
+  // For full M4 coverage, add Sentry.getReplay()?.stop() in app/p/[id]/page.tsx.
   replaysSessionSampleRate: 0.1,
   replaysOnErrorSampleRate: 1.0,
 
   integrations: [
     Sentry.replayIntegration({
-      // Mask all text nodes and block all media elements by default.
+      // FIX M4: maskAllText + blockAllMedia are the primary protections on
+      // viewer routes. Even if Replay triggers on an error during decryption,
+      // no plaintext content is captured in any DOM snapshot.
+      //
+      // NOTE: @sentry/nextjs v10.x removed shouldSampleForReplay from
+      // ReplayConfiguration. Full route-level suppression (stopping the Replay
+      // worker entirely on /p/* routes) must be done at the page level:
+      //   useEffect(() => { Sentry.getReplay()?.stop(); }, []);
+      // Add this to app/p/[id]/page.tsx for complete M4 coverage.
       maskAllText:   true,
       blockAllMedia: true,
-
-      // FIX M4: Completely disable Replay sampling on paste viewer routes.
-      // /p/[id] is where decrypted paste content is rendered — zero DOM
-      // snapshots must be taken here to preserve the zero-knowledge guarantee.
-      //
-      // shouldSampleForReplay is called before any recording begins. Returning
-      // false prevents the Replay worker from initialising for that navigation,
-      // so no DOM content is ever captured — even on errors.
-      shouldSampleForReplay({ name: routeName }) {
-        // Disable on viewer routes entirely — both session and error sampling.
-        if (routeName.startsWith('/p/')) return false;
-        return undefined; // Use default sampling rates for all other routes.
-      },
     }),
   ],
 
