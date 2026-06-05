@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FeatureRow } from './FeatureRow';
 import { openCheckout, PlanDuration } from '../../mocks/api.mock';
 import { Spinner } from '../ui/Spinner';
@@ -10,7 +10,10 @@ const MONTHLY_BASE_USD = 3;
 function getSavingsBadge(plan: PlanDuration | 'free', isIndia: boolean): string | null {
   const monthlyBase = isIndia ? MONTHLY_BASE_INR : MONTHLY_BASE_USD;
   if (plan === 'half-yearly') {
-    const fullPrice = isIndia ? 549 : 12;
+    // FIX BUG-3: was 549 (typo) — actual India half-yearly price is ₹599.
+    // Old calculation: (149×6 − 549) / (149×6) = 38.6% → "Save 39%" ← wrong
+    // New calculation: (149×6 − 599) / (149×6) = 33.0% → "Save 33%" ← correct
+    const fullPrice = isIndia ? 599 : 12;
     const wouldPay = monthlyBase * 6;
     const saving = Math.round(((wouldPay - fullPrice) / wouldPay) * 100);
     return `Save ${saving}%`;
@@ -25,8 +28,12 @@ function getSavingsBadge(plan: PlanDuration | 'free', isIndia: boolean): string 
 }
 
 function getMonthlyEquivalent(plan: PlanDuration | 'free', isIndia: boolean): string | null {
-  if (plan === 'half-yearly') return isIndia ? '≈ ₹92/mo' : '≈ $2/mo';
-  if (plan === 'annual')      return isIndia ? '≈ ₹83/mo' : '≈ $2/mo';
+  if (plan === 'half-yearly') {
+    // FIX BUG-3: was '≈ ₹92/mo' which was based on the wrong ₹549 price.
+    // Correct: ₹599 ÷ 6 = ≈ ₹100/mo
+    return isIndia ? '≈ ₹100/mo' : '≈ $2/mo';
+  }
+  if (plan === 'annual') return isIndia ? '≈ ₹83/mo' : '≈ $2/mo';
   return null;
 }
 
@@ -50,18 +57,73 @@ export function PricingCard({
   region?: 'india' | 'intl';
 }) {
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Tracks which region was active when the most recent checkout click fired.
+  // Used to guard against a stale promise continuation redirecting the user
+  // after they have already switched to the other payment tab.
+  const clickedRegionRef = useRef<'india' | 'intl' | null>(null);
+
+  // FIX BUG-1 — shared isLoading state across tab switches.
+  //
+  // React reuses the same PricingCard component instances when the user
+  // toggles the India ↔ International tab — only props change; the component
+  // never unmounts. Without this effect, isLoading=true set by a click on the
+  // International Annual card persists into the India Annual card, making it
+  // appear stuck on "Redirecting…" even though no Razorpay checkout was ever
+  // started. The same bug makes the Razorpay card's isLoading bleed into the
+  // Lemon Squeezy card when switching the other way.
+  //
+  // Resetting on region change is the correct fix: when the user switches tabs
+  // they are starting a fresh interaction with a different payment provider.
+  useEffect(() => {
+    setIsLoading(false);
+    setError(null);
+    clickedRegionRef.current = null;
+  }, [region]);
 
   const handleCheckout = async () => {
     if (plan === 'free' || isLoading) return;
+
+    // Snapshot the region at the moment of the click. The `region` prop can
+    // change (tab switch) while the async checkout request is in flight, so we
+    // must capture it here rather than reading it from the closure later.
+    const regionAtClick = region;
+    clickedRegionRef.current = regionAtClick;
+
     setIsLoading(true);
+    setError(null);
+
     try {
-      const { checkoutUrl } = await openCheckout(plan, region);
+      const { checkoutUrl } = await openCheckout(plan, regionAtClick);
+
+      // If the user switched tabs while the request was in flight, the useEffect
+      // above has already reset this card. Abort the redirect silently — the
+      // user's intent has changed.
+      if (clickedRegionRef.current !== regionAtClick) {
+        setIsLoading(false);
+        return;
+      }
+
       if (typeof window !== 'undefined') window.location.href = checkoutUrl;
-      // Note: don't reset isLoading on success — the page is navigating away.
-      // The button stays in loading state until the navigation completes.
-    } catch {
-      // On error, reset so the user can retry.
+      // Don't reset isLoading on success — the page is navigating away.
+      // The button stays in "Redirecting…" state until the navigation completes.
+    } catch (err) {
+      // FIX BUG-2 — silent failure with no user feedback.
+      //
+      // The old catch block called setIsLoading(false) and nothing else.
+      // When the Lemon Squeezy checkout API fails (wrong variant ID on Vercel,
+      // LS account not fully active, network error, etc.) the button silently
+      // resets to "Upgrade Now" / "Get Started" with no indication of what went
+      // wrong. The user interprets this as "it didn't redirect" and retries in
+      // confusion. Surfacing the error message immediately makes the failure
+      // visible and actionable.
       setIsLoading(false);
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Checkout is temporarily unavailable. Please try again.';
+      setError(message);
     }
   };
 
@@ -112,10 +174,11 @@ export function PricingCard({
         )}
       </div>
 
+      {/* Button — mb reduced to mb-3 to leave room for the error row below */}
       <button
         onClick={handleCheckout}
         disabled={isLoading || plan === 'free'}
-        className={`w-full py-3 rounded-xl font-bold transition mb-8 uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 ${
+        className={`w-full py-3 rounded-xl font-bold transition mb-3 uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 ${
           isPro
             ? 'bg-indigo-600 dark:bg-orange-600 text-white hover:bg-indigo-700 dark:hover:bg-orange-500 shadow-md dark:shadow-lg dark:shadow-orange-500/20 disabled:opacity-70 disabled:cursor-not-allowed'
             : 'bg-gray-50 dark:bg-black border border-gray-200 dark:border-white/10 text-gray-700 dark:text-white/70 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-900 dark:hover:text-white disabled:opacity-70 disabled:cursor-not-allowed'
@@ -130,6 +193,17 @@ export function PricingCard({
           getButtonLabel()
         )}
       </button>
+
+      {/* Error feedback — replaces the bottom half of the original mb-8 gap.
+          min-h ensures the feature list position is stable whether or not
+          an error is displayed. */}
+      <div className="mb-5 min-h-[20px] flex items-start justify-center">
+        {error && (
+          <p className="text-[10px] font-mono text-red-500 dark:text-red-400 text-center leading-relaxed px-1">
+            {error}
+          </p>
+        )}
+      </div>
 
       <ul className="flex flex-col gap-4">
         {features.map((f, i) => (
