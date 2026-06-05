@@ -246,15 +246,29 @@ async function handleRazorpayCheckout(
 }
 
 // ── Lemon Squeezy checkout (international users) ──────────────────────────────
+//
+// WEBHOOK URL:
+//   Lemon Squeezy subscription lifecycle events (subscription_created,
+//   subscription_updated, subscription_cancelled, subscription_expired,
+//   subscription_payment_success) are delivered to:
+//
+//     https://scorchpad.rsaatlabs.com/api/webhooks/lemonsqueezy
+//
+//   This URL is read from LEMONSQUEEZY_WEBHOOK_URL and must be registered in
+//   the Lemon Squeezy Dashboard → Settings → Webhooks, or via createWebhook()
+//   during initial store setup. The HMAC secret used to verify incoming
+//   payloads is LEMONSQUEEZY_WEBHOOK_SECRET.
 
 async function handleLsCheckout(
   plan:   PlanDuration,
   userId: string,
   email:  string
 ): Promise<Response> {
-  const storeId   = Number(process.env['LEMONSQUEEZY_STORE_ID'] ?? '0');
-  const variantId = getLsVariantId(plan);
-  const apiKey    = process.env['LEMONSQUEEZY_API_KEY'] ?? '';
+  const storeId    = Number(process.env['LEMONSQUEEZY_STORE_ID'] ?? '0');
+  const variantId  = getLsVariantId(plan);
+  const apiKey     = process.env['LEMONSQUEEZY_API_KEY'] ?? '';
+  const webhookUrl = process.env['LEMONSQUEEZY_WEBHOOK_URL'] ?? 'https://scorchpad.rsaatlabs.com/api/webhooks/lemonsqueezy';
+  const appUrl     = process.env['NEXT_PUBLIC_APP_URL']      ?? 'https://scorchpad.rsaatlabs.com';
 
   if (!storeId || !variantId || !apiKey) {
     console.error(`[scorchpad/checkout] Missing LS config — storeId:${storeId} variantId:${variantId} hasKey:${!!apiKey}`);
@@ -264,14 +278,25 @@ async function handleLsCheckout(
     );
   }
 
+  if (!webhookUrl) {
+    console.error('[scorchpad/checkout] LEMONSQUEEZY_WEBHOOK_URL is not set — webhook deliveries will fail');
+  }
+
   try {
     lemonSqueezySetup({ apiKey });
 
     const result = await createCheckout(storeId, variantId, {
       checkoutOptions: { embed: false },
       checkoutData: {
-        email: email || undefined,
+        email:  email || undefined,
         custom: { userId },
+      },
+      productOptions: {
+        // Redirect the customer back to the dashboard after a successful
+        // payment. Pro access itself is granted by the webhook handler
+        // (app/api/webhooks/lemonsqueezy/route.ts) once Lemon Squeezy
+        // delivers the subscription_created event to LEMONSQUEEZY_WEBHOOK_URL.
+        redirectUrl: `${appUrl}/dashboard`,
       },
     });
 
