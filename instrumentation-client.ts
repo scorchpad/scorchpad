@@ -46,11 +46,6 @@ Sentry.init({
   environment:      process.env.NODE_ENV ?? 'development',
   release:          process.env.SENTRY_RELEASE,
 
-  // FIX H3: Route all Sentry events through the same-origin /monitoring tunnel.
-  // This means the browser never connects directly to *.ingest.sentry.io,
-  // so the Sentry project credentials don't need to appear in the CSP header.
-  tunnelRoute: '/monitoring',
-
   // Sample 10% of frontend performance traces in production.
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
 
