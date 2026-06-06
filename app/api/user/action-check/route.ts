@@ -3,10 +3,26 @@
 // POST /api/user/action-check
 // Returns { allowed, reason?, upgradeUrl? } for a given ScorchPad action.
 //
-// FIX: password_protection now correctly reports "requires a Pro subscription"
-// (was "requires a free account" — wrong per spec A.6 which gates password on Pro).
+// SECURITY FIXES (this version):
 //
-// RUNTIME: Edge — no Prisma.
+//   FIX #5 — Rate limiting added:
+//     This endpoint was completely unrated. Because it exposes tier capability
+//     data (which features are allowed for the caller's plan), an attacker with
+//     a stolen or guessed session token could rapidly enumerate all feature gates
+//     to precisely map out the target account's tier, plan type, and access level.
+//     Combined with account takeover, this accelerates privilege mapping.
+//
+//     Limit: 30 req/min per identity (userId for authenticated, ipHash for
+//     anonymous). This is generous for real user interaction (clicking feature
+//     gates) while blocking automated enumeration.
+//
+//     The Edge runtime is retained — Upstash rate limiting works on Edge.
+//
+//   NOTE (EXISTING FIX): password_protection correctly reports "requires a Pro
+//   subscription" (was "requires a free account" — wrong per spec A.6 which
+//   gates password protection on Pro, not free).
+//
+// RUNTIME: Edge — no Prisma. Upstash Ratelimit works on Edge runtime.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const runtime = 'edge';
@@ -17,6 +33,8 @@ import {
   getLimits,
   getUpgradeUrl,
 } from '../../../../lib/plan-limits';
+import { getClientIp, hashIp } from '../../../../lib/ip';
+import { actionCheckLimit } from '../../../../lib/ratelimit';
 
 type ScorchPadAction =
   | 'unlimited_views'
@@ -38,6 +56,36 @@ function isValidAction(v: unknown): v is ScorchPadAction {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // ── FIX #5: Rate limiting ──────────────────────────────────────────────────
+  // Must run before auth() to block abuse before any Clerk network call.
+  // Identifier: userId for authenticated callers, ipHash for anonymous.
+  // We derive userId cheaply from the JWT without a network call for the key.
+  const { userId, sessionClaims } = await auth();
+
+  let rateLimitId: string;
+  if (userId) {
+    rateLimitId = userId;
+  } else {
+    const rawIp = getClientIp(request);
+    rateLimitId = await hashIp(rawIp);
+  }
+
+  const { success, reset } = await actionCheckLimit.limit(rateLimitId);
+  if (!success) {
+    const retryAfter = Math.max(1, Math.ceil((reset - Date.now()) / 1000));
+    return Response.json(
+      { error: 'Too many requests. Please slow down.', code: 'ERR_RATE_LIMITED' },
+      {
+        status: 429,
+        headers: {
+          'Retry-After':   String(retryAfter),
+          'Cache-Control': 'no-store',
+        },
+      }
+    );
+  }
+
+  // ── Parse body ─────────────────────────────────────────────────────────────
   let body: unknown;
   try { body = await request.json(); } catch {
     return Response.json({ error: 'Invalid JSON body', code: 'ERR_INVALID_BODY' }, { status: 400 });
@@ -57,21 +105,21 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const { userId, sessionClaims } = await auth();
+  // ── Tier & limits ──────────────────────────────────────────────────────────
   const tierInfo = deriveTierFromClaims(
     userId ?? null,
     sessionClaims as Record<string, unknown> | null
   );
   const { tier, planType } = tierInfo;
-  const limits = getLimits(tier, planType);
+  const limits     = getLimits(tier, planType);
   const upgradeUrl = getUpgradeUrl();
 
+  // ── Feature gate checks ────────────────────────────────────────────────────
   switch (action) {
     case 'password_protection':
       if (!limits.allowPassword) {
         return Response.json({
           allowed:    false,
-          // FIXED: was "requires a free account" — password is Pro-only per spec
           reason:     'Password protection requires a Pro subscription.',
           upgradeUrl,
         });

@@ -1,38 +1,72 @@
-# dependencies
+# .gitignore
+# ─────────────────────────────────────────────────────────────────────────────
+# SECURITY NOTE: Any file you intend to keep out of version control must be
+# listed here AND removed from git tracking if previously committed.
+#
+# To purge already-committed files that should be ignored:
+#   git rm --cached <file>          (single file)
+#   git rm --cached -r <directory>  (directory)
+#   git commit -m "chore: remove tracked files now in .gitignore"
+#
+# IMMEDIATE ACTIONS REQUIRED after pulling this file:
+#
+#   FIX #10 — desktop.ini files (Windows folder metadata, leaked dev OS):
+#     git rm --cached $(git ls-files "**/desktop.ini" "desktop.ini") 2>/dev/null
+#     git commit -m "chore: remove tracked desktop.ini artifacts"
+#
+#   FIX #9 — metadata.json (AI tooling fingerprint, Gemini API capability disclosure):
+#     git rm --cached metadata.json 2>/dev/null
+#     git commit -m "chore: remove metadata.json AI build artifact"
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
 node_modules/
 
-# next.js
+# ── Next.js build output ──────────────────────────────────────────────────────
 .next/
 out/
 build/
 dist/
 
-# env files — never commit secrets
+# ── Environment files — NEVER commit secrets ──────────────────────────────────
 .env*
 !.env.example
 
-# testing
+# ── Testing ───────────────────────────────────────────────────────────────────
 coverage/
 playwright-report/
 test-results/
 
-# misc
+# ── Misc ──────────────────────────────────────────────────────────────────────
 .DS_Store
 *.log
 *.tsbuildinfo
 next-env.d.ts
 
-# sentry
+# ── Sentry ────────────────────────────────────────────────────────────────────
 .sentryclirc
 
-# Visual Studio
+# ── Visual Studio ─────────────────────────────────────────────────────────────
 .vs/
 
-# Windows artifacts
+# ── Windows artifacts ─────────────────────────────────────────────────────────
+# FIX #10: desktop.ini files are Windows folder metadata that reveal the dev
+# environment (Windows machine) and contain no useful project information.
+# The file in /public/ was publicly served at /desktop.ini — now blocked.
+# Run the git rm command above to remove already-committed files from tracking.
 desktop.ini
+**/desktop.ini
 Thumbs.db
 
-# ── CRYPTOGRAPHIC KEYS — NEVER COMMIT ─────────────────────────────────────────
+# ── AI build artifacts ────────────────────────────────────────────────────────
+# FIX #9: metadata.json is a Gemini AI Studio build artifact accidentally
+# committed to the repo. It exposes MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API,
+# fingerprinting the codebase as AI-generated and revealing AI tooling details.
+# Run: git rm --cached metadata.json && git commit -m "chore: remove metadata.json"
+metadata.json
+
+# ── Cryptographic keys — NEVER commit ────────────────────────────────────────
 # Private PGP / GPG keys must NEVER be placed in /public or committed to git.
 # The PUBLIC key (/public/pgp-key.txt) is safe to commit.
 # The PRIVATE key must be stored in a password manager or secrets vault.
