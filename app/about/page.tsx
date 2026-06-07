@@ -345,6 +345,43 @@ export default function AboutPage() {
         </p>
       </section>
 
+      {/* Open source */}
+      <section className="mb-12 p-6 border border-gray-200 dark:border-white/10 rounded-xl bg-white dark:bg-[#050505]">
+        <div className="flex items-center gap-2 mb-3">
+          <Github size={14} className="text-gray-600 dark:text-white/60" />
+          <h2 className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-widest">Open Source</h2>
+        </div>
+        <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide mb-3">
+          ScorchPad is fully open source. The entire codebase — frontend, backend API, encryption logic, and database schema — is publicly available on GitHub.
+        </p>
+        <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide mb-4">
+          For a zero-knowledge tool, open source is not just a philosophy — it is the only way to substantiate the claims on this page. You should not have to trust our word that the server never receives your decryption key. You should be able to read the code and verify it yourself.
+        </p>
+        <ul className="space-y-2 mb-5">
+          {[
+            'src/lib/crypto.ts — the full AES-256-GCM WebCrypto implementation',
+            'src/lib/urlFragment.ts — how keys are encoded into and erased from URL fragments',
+            'app/api/paste/create/route.ts — what the server actually receives (ciphertext only)',
+            'middleware.ts — nonce-based CSP that prevents unauthorized script injection',
+            'lib/ip.ts — HMAC-SHA256 IP hashing, raw IPs never stored',
+          ].map((item) => (
+            <li key={item} className="flex items-start gap-2.5 text-[11px] font-mono text-gray-500 dark:text-white/40">
+              <span className="w-1 h-1 rounded-full bg-gray-400 dark:bg-white/30 shrink-0 mt-2" />
+              {item}
+            </li>
+          ))}
+        </ul>
+        <a
+          href="https://github.com/scorchpad/scorchpad"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 text-[11px] font-mono font-bold text-indigo-600 dark:text-orange-400 hover:opacity-80 transition-opacity border border-indigo-200 dark:border-orange-500/30 rounded-lg px-4 py-2.5 bg-indigo-50/50 dark:bg-orange-500/5"
+        >
+          <Github size={13} />
+          github.com/scorchpad/scorchpad
+        </a>
+      </section>
+
       {/* Crypto sections */}
       <div className="space-y-5 mb-16">
         <h2 className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-widest">
@@ -516,43 +553,6 @@ export default function AboutPage() {
           <a href="/.well-known/security.txt" className="text-indigo-600 dark:text-orange-400 underline hover:opacity-80">/.well-known/security.txt</a>.
           If you find a security vulnerability, please report it there.
         </p>
-      </section>
-
-      {/* Open source */}
-      <section className="mb-12 p-6 border border-gray-200 dark:border-white/10 rounded-xl bg-white dark:bg-[#050505]">
-        <div className="flex items-center gap-2 mb-3">
-          <Github size={14} className="text-gray-600 dark:text-white/60" />
-          <h2 className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-widest">Open Source</h2>
-        </div>
-        <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide mb-3">
-          ScorchPad is fully open source. The entire codebase — frontend, backend API, encryption logic, and database schema — is publicly available on GitHub.
-        </p>
-        <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide mb-4">
-          For a zero-knowledge tool, open source is not just a philosophy — it is the only way to substantiate the claims on this page. You should not have to trust our word that the server never receives your decryption key. You should be able to read the code and verify it yourself.
-        </p>
-        <ul className="space-y-2 mb-5">
-          {[
-            'src/lib/crypto.ts — the full AES-256-GCM WebCrypto implementation',
-            'src/lib/urlFragment.ts — how keys are encoded into and erased from URL fragments',
-            'app/api/paste/create/route.ts — what the server actually receives (ciphertext only)',
-            'middleware.ts — nonce-based CSP that prevents unauthorized script injection',
-            'lib/ip.ts — HMAC-SHA256 IP hashing, raw IPs never stored',
-          ].map((item) => (
-            <li key={item} className="flex items-start gap-2.5 text-[11px] font-mono text-gray-500 dark:text-white/40">
-              <span className="w-1 h-1 rounded-full bg-gray-400 dark:bg-white/30 shrink-0 mt-2" />
-              {item}
-            </li>
-          ))}
-        </ul>
-        <a
-          href="https://github.com/scorchpad/scorchpad"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 text-[11px] font-mono font-bold text-indigo-600 dark:text-orange-400 hover:opacity-80 transition-opacity border border-indigo-200 dark:border-orange-500/30 rounded-lg px-4 py-2.5 bg-indigo-50/50 dark:bg-orange-500/5"
-        >
-          <Github size={13} />
-          github.com/scorchpad/scorchpad
-        </a>
       </section>
 
       {/* Built by */}
