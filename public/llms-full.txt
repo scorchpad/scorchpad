@@ -1,0 +1,395 @@
+ScorchPad — Full Security & Architecture Documentation
+https://scorchpad.rsaatlabs.com/about
+======================================================
+
+Built so we literally cannot read your data.
+
+ScorchPad is a zero-knowledge encrypted paste service built by Rsaat Labs. Every
+cryptographic decision was made to ensure that even we — the operators — cannot
+access your content under any circumstances, including legal compulsion.
+
+
+WHAT IS SCORCHPAD?
+==================
+
+ScorchPad is a pastebin — a tool for sharing text securely. Unlike traditional
+pastebins like Pastebin.com that store your text in plaintext on their servers
+(where they can read it, governments can subpoena it, and hackers who breach
+their database can steal it), ScorchPad encrypts your content in your browser
+before it ever leaves your device.
+
+This is not a marketing claim. It is an architectural constraint. The
+cryptographic design makes it impossible — not merely unlikely — for us to read
+your content.
+
+
+CRYPTOGRAPHIC AND SECURITY IMPLEMENTATION
+==========================================
+
+1. AES-256-GCM — Authenticated Encryption
+------------------------------------------
+Every paste is encrypted using AES-256-GCM (Advanced Encryption Standard,
+256-bit key, Galois/Counter Mode). This is the same algorithm used by the US
+National Security Agency for TOP SECRET classified information.
+
+GCM mode provides both confidentiality and authenticity — meaning it is
+impossible to tamper with the ciphertext without the decryption failing. If
+anyone modifies even a single byte of the encrypted blob in transit or at rest,
+decryption will throw an authentication error rather than silently produce
+corrupted data. This protects against active attackers, not just passive
+eavesdroppers.
+
+
+2. PBKDF2-SHA256 at 310,000 Iterations — Password Hardening
+------------------------------------------------------------
+When you enable password protection on a paste, the password is never sent to
+our server. Instead, your browser derives the encryption key from the password
+using PBKDF2-SHA256 (Password-Based Key Derivation Function 2).
+
+The iteration count of 310,000 meets the OWASP 2023 minimum recommendation.
+This means an attacker trying to brute-force the password must perform 310,000
+SHA-256 operations per guess — limiting an attacker to roughly a few thousand
+guesses per second per GPU.
+
+The PBKDF2 salt is a cryptographically random 32-byte value generated fresh for
+each paste. The server stores only the salt and a rate-limiting proof (an
+HMAC-SHA256 token), never the password or the derived key.
+
+For password-protected pastes, there is no key in the URL fragment at all. The
+receiver must enter the correct password, from which their browser independently
+derives the identical AES key and decrypts locally. The URL is meaningless
+without the password.
+
+
+3. Zero-Knowledge Architecture — The Server Is Blind
+------------------------------------------------------
+Zero-knowledge means we hold zero knowledge of your paste content. This is an
+architectural guarantee, not a policy promise.
+
+The exact sequence:
+  1. You type your text in the editor.
+  2. Your browser generates a cryptographically random 256-bit key using
+     window.crypto.getRandomValues().
+  3. Your browser encrypts the text using AES-256-GCM with that key.
+  4. The encrypted blob is sent to our server. The key is NOT included.
+  5. The key is placed only in the URL fragment (the part after #).
+  6. Browsers never include the URL fragment in HTTP requests — the server
+     receives the path but never the fragment.
+  7. When someone opens the link, their browser extracts the key from the
+     fragment locally and decrypts locally.
+
+Our server stores an encrypted blob that is mathematically indistinguishable
+from random noise without the key. Even with full database access, your content
+cannot be read.
+
+
+4. URL Fragment Erasure After Decryption
+-----------------------------------------
+After successful decryption, ScorchPad immediately calls history.replaceState()
+to remove the key fragment from the URL in your browser's address bar and
+history.
+
+If you decrypt a paste and then share your screen, copy the URL, or your browser
+history is inspected, the key is no longer present. The URL becomes a dead link
+that cannot be used to re-decrypt the content. No other mainstream pastebin
+implements this.
+
+
+5. Clipboard Auto-Clear (30 Seconds)
+--------------------------------------
+When you copy a share link that contains a key fragment, ScorchPad starts a
+30-second countdown. When it reaches zero, the clipboard is overwritten with an
+empty string.
+
+This protects against clipboard inspection by malware, browser extensions, or a
+shared machine where you forget to clear your clipboard. The countdown is visible
+in the copy button so you always know when it will clear.
+
+
+6. Atomic Burn-After-Reading — Race-Condition Proof
+-----------------------------------------------------
+Burn-after-reading pastes are implemented using an atomic Lua script executed
+directly on the Redis server via EVAL.
+
+The script atomically decrements the view counter and deletes the paste in a
+single operation. It is impossible for two concurrent requests to both receive
+the last view of a paste — a race condition that naive implementations are
+vulnerable to.
+
+Conventional implementations check the count, then decrement in two separate
+operations. Between those two operations, a second request can slip in and read
+a paste that should have been destroyed. Ours cannot be split.
+
+
+7. Sandboxed HTML Paste Rendering
+-----------------------------------
+HTML pastes are rendered inside an iframe with the sandbox="" attribute — the
+most restrictive sandboxing possible. All sandbox restrictions are active with
+no flags set:
+
+  - No JavaScript execution
+  - No same-origin access (cannot read cookies, localStorage, or make API calls)
+  - No form submission
+  - No popups or plugin execution
+
+Traditional pastebins render HTML inline in the same origin as the application
+— an XSS vector where malicious HTML could steal session tokens or exfiltrate
+data. ScorchPad's sandboxed iframe makes this impossible.
+
+
+8. Non-Extractable CryptoKey on Viewer Side
+--------------------------------------------
+When your browser imports the decryption key for use, it is imported with
+extractable: false. This means the key cannot be extracted from the browser's
+Web Crypto API after import.
+
+If a browser extension or injected script attempts to read the CryptoKey object,
+the Web Crypto API will refuse. The key can be used for decryption but cannot be
+read back as raw bytes — an additional layer of in-browser key protection on top
+of the URL fragment erasure.
+
+
+9. IP Hashing — Raw IPs Never Stored
+--------------------------------------
+ScorchPad uses rate limiting to prevent abuse. Rate limits are enforced per IP
+address. However, raw IP addresses are never stored anywhere in our database
+or logs.
+
+Every IP address is processed through HMAC-SHA256 with a secret key
+(IP_HASH_SECRET) that is unique to ScorchPad and never reused across our other
+products. The result is a one-way hash — it can be used to check rate limits
+but cannot be reversed to recover the original IP address.
+
+This means even in a full database breach, no IP addresses can be extracted.
+
+
+10. HMAC Password Proof — Rate-Limit Without Exposure
+------------------------------------------------------
+For password-protected pastes, the server needs to rate-limit brute-force
+attempts without ever receiving the password. This is solved using an
+HMAC-SHA256 proof token.
+
+When you enter a password, your browser computes HMAC-SHA256(password,
+passwordSalt). This proof token is sent to the server. The server stores it
+and checks it on subsequent verify-password calls to enforce rate limits
+(5 attempts per 15 minutes per paste per IP).
+
+The server never receives the raw password, and the HMAC proof cannot be
+reversed to recover the password. Decryption still happens entirely in your
+browser after the server returns the encrypted blob.
+
+
+11. DOMPurify Sanitization — Belt and Suspenders
+--------------------------------------------------
+All decrypted content is passed through DOMPurify before being rendered in the
+browser, regardless of whether it is rendered as plain text, code, or HTML.
+
+For plain text and code pastes: DOMPurify runs with HTML disabled, stripping
+any markup that might have been encoded in the ciphertext.
+
+For HTML pastes: DOMPurify runs with a strict allowlist before the content is
+assigned to the sandboxed iframe's srcdoc attribute. Two independent layers —
+DOMPurify plus the sandbox — protect against XSS.
+
+This "belt and suspenders" approach means that even if the sandboxed iframe
+were somehow misconfigured, DOMPurify would still strip malicious payloads
+before they reached the iframe.
+
+
+12. Error Boundary + Sentry Scrubbing — No Leaks in Error Reports
+------------------------------------------------------------------
+All decrypted content rendering is wrapped in a React ErrorBoundary. If
+decryption fails or throws an unexpected exception, the ErrorBoundary catches
+it and shows a safe error message.
+
+ScorchPad uses Sentry for error tracking, but Sentry is configured with
+aggressive content scrubbing. Before any error event is sent to Sentry's
+servers:
+
+  - URL fragments (which contain decryption keys) are stripped from all
+    breadcrumb URLs
+  - Any field containing "key", "password", "decrypt", or "plaintext" is
+    redacted
+  - The error boundary catches and classifies crypto exceptions before they
+    reach Sentry
+
+Even our error tracking system cannot be used to reconstruct decryption keys
+or paste content.
+
+
+13. Sliding Window Rate Limiting — Per Hashed IP
+-------------------------------------------------
+All API endpoints are rate-limited using Upstash Redis sliding window rate
+limits, keyed by hashed IP address (never raw IPs).
+
+  POST /api/paste (create):       Anonymous: 3/day | Free: 10/day | Pro: 50–unlimited/day
+  GET /api/paste/:id (read):      20 per minute per IP
+  POST /api/paste/:id/verify-password: 5 per 15 minutes per paste per IP
+
+Rate limit keys are prefixed rl:pv:* and isolated from other Rsaat Labs
+products. Exceeding limits returns 429. No IP addresses are persisted.
+
+
+14. Redis TTL Auto-Deletion — Zero Data Retention
+--------------------------------------------------
+All paste data in Redis is stored with a TTL (time-to-live) set at creation
+time. When the TTL expires, Redis automatically deletes the data with no server
+intervention. There is no cleanup cron job, no background worker, no scheduled
+task.
+
+  - No window exists where a cron job running as root could access expired data
+  - No race condition between "mark as expired" and "delete" — TTL is atomic
+  - No possibility of data lingering due to a failed cleanup job
+
+Burn-after-reading pastes are deleted by the atomic Lua script on the last view,
+regardless of whether the TTL has elapsed.
+
+
+WHAT WE CANNOT DO
+=================
+
+  - Read your paste content — we hold only encrypted ciphertext
+  - Provide decryption keys to governments or law enforcement — we never
+    possess them
+  - Comply with a court order to produce plaintext content — there is nothing
+    to produce
+  - Recover a lost link — the key is only in the URL fragment, which we never
+    see
+  - Access a password-protected paste — the password is never sent to us
+  - Identify you by IP address — only one-way HMAC hashes are stored
+  - Produce plaintext from Sentry error reports — content is scrubbed before
+    transmission
+
+
+WHAT HAPPENS IF SCORCHPAD GETS HACKED?
+=======================================
+
+Honest threat modeling — what an attacker actually gets in each scenario.
+
+LOW IMPACT: Database or Redis fully compromised
+  What the attacker gets: Encrypted blobs, IVs, PBKDF2 salts, HMAC proof
+  tokens, paste metadata (expiry, view count, language, size in bytes), hashed
+  IPs, and subscription data.
+  Impact: Zero paste content exposed. The encrypted blobs are mathematically
+  meaningless without decryption keys. Keys were never sent to the server.
+  Hashed IPs cannot be reversed. HMAC proof tokens cannot reveal passwords.
+  Note: The attacker could attempt offline brute-force against
+  password-protected pastes using the HMAC proof tokens, but PBKDF2 at 310,000
+  iterations makes this computationally expensive.
+
+LOW IMPACT: Full server code compromise (RCE)
+  What the attacker gets: Control of the Node.js process; can inspect all
+  incoming requests in real time.
+  Impact: The attacker can see encrypted ciphertext arriving in API requests.
+  They cannot see decryption keys — keys are in URL fragments which browsers
+  never include in HTTP requests. They cannot retroactively decrypt existing
+  pastes.
+  Note: Pastes created after the compromise date could be at risk if the
+  attacker modifies the server to return malicious JavaScript.
+
+MEDIUM IMPACT: Clerk authentication breach
+  What the attacker gets: User records: email addresses, names, and subscription
+  tier.
+  Impact: Paste content is not affected. Clerk holds zero paste data — paste
+  storage is entirely in Upstash Redis, isolated from authentication. Account
+  takeover is possible, but existing paste content cannot be read.
+
+NO IMPACT: HTTPS traffic interception (MITM)
+  What the attacker gets: Intercepts network traffic between browser and server.
+  Impact: HTTPS with HSTS preloading prevents this attack. Even if somehow
+  intercepted, the attacker sees only encrypted ciphertext — the key is in the
+  URL fragment which is never transmitted.
+
+CRITICAL — REAL THREAT: Malicious JavaScript served from our domain
+  What the attacker gets: Control of infrastructure; replaces JavaScript with
+  code that intercepts plaintext before encryption.
+  Impact: This IS a real threat vector. Browser-based encryption cannot defend
+  against a compromised JavaScript delivery pipeline.
+  Mitigations: HSTS preloading, warrant canary, HTTPS certificate transparency
+  monitoring. Planned: Subresource Integrity (SRI) tags.
+
+
+KNOWN LIMITATIONS — HONEST DISCLOSURE
+=======================================
+
+JavaScript supply chain dependency
+  ScorchPad's zero-knowledge guarantee assumes the JavaScript delivered to your
+  browser is honest. If our CDN or hosting provider is compromised, or if we are
+  legally compelled to serve backdoored code, an attacker could intercept
+  plaintext before it is encrypted. Our warrant canary exists to signal if this
+  has ever happened.
+
+Browser extension access
+  Browser extensions with broad permissions can read page content, intercept
+  clipboard data, and observe network requests. A malicious extension could read
+  plaintext before encryption. We recommend creating sensitive pastes in a
+  browser profile with no extensions installed.
+
+Screen recording and shoulder surfing
+  Plaintext is visible in the editor before you click "Create Secure Link". URL
+  fragment erasure only protects the link after decryption — it does not protect
+  the moment of viewing.
+
+No forward secrecy for stored pastes
+  Unlike HTTPS session keys, paste keys are long-lived. AES-256 is currently
+  considered quantum-resistant, but this is a theoretical long-term
+  consideration.
+
+No independent security audit
+  ScorchPad has not yet undergone a third-party cryptographic audit. The
+  implementation follows established standards (NIST, OWASP), but independent
+  verification would provide stronger assurance. We intend to commission an
+  audit as the product matures.
+
+
+WARRANT CANARY
+==============
+A warrant canary is a transparency mechanism. ScorchPad publishes a statement
+— updated manually every month — confirming that we have NOT received any secret
+government orders, National Security Letters, or gag orders requiring us to
+compromise user privacy or install backdoors.
+
+The mechanism works through absence: if the canary page stops being updated, or
+if the statements change, that signals something has happened that prevents us
+from speaking openly.
+
+Canary page:      https://scorchpad.rsaatlabs.com/warrant-canary
+Raw signed text:  https://scorchpad.rsaatlabs.com/warrant-canary.txt
+PGP key:          https://scorchpad.rsaatlabs.com/pgp-key.txt
+Security contact: https://scorchpad.rsaatlabs.com/.well-known/security.txt
+
+If the canary has not been updated within 45 days, treat that as a signal.
+
+
+OPEN SOURCE
+===========
+ScorchPad is fully open source. The entire codebase — frontend, backend API,
+encryption logic, and database schema — is publicly available on GitHub.
+
+For a zero-knowledge tool, open source is not just a philosophy — it is the only
+way to substantiate the claims on this page. You should not have to trust our
+word that the server never receives your decryption key. You should be able to
+read the code and verify it yourself.
+
+Key files to audit:
+  - src/lib/crypto.ts        — the full AES-256-GCM WebCrypto implementation
+  - src/lib/urlFragment.ts   — how keys are encoded into and erased from URL
+                               fragments
+  - app/api/paste/create/    — what the server actually receives (ciphertext
+    route.ts                   only)
+  - middleware.ts            — nonce-based CSP that prevents unauthorized script
+                               injection
+  - lib/ip.ts                — HMAC-SHA256 IP hashing, raw IPs never stored
+
+Repository: https://github.com/scorchpad/scorchpad
+
+
+BUILT BY RSAAT LABS
+===================
+ScorchPad is a product of Rsaat Labs — an independent software laboratory
+focused on privacy-by-architecture. We build tools where privacy is a structural
+property, not a setting.
+
+Website:    https://rsaatlabs.com
+ZenConvert: https://zenconvert.rsaatlabs.com (client-side file conversion)
+SNF Labs:   https://shadownf.com (passive network forensics engine)

@@ -60,6 +60,8 @@ const isPublicRoute = createRouteMatcher([
   '/pgp-key.txt',
   '/robots.txt',
   '/warrant-canary.txt',
+  '/llms.txt',
+  '/llms-full.txt',
   '/sitemap.xml',
   '/.well-known/(.*)',
   '/favicon.svg',

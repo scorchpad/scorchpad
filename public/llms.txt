@@ -1,0 +1,85 @@
+# ScorchPad
+
+> Zero-knowledge encrypted text sharing built by Rsaat Labs. Encryption happens entirely in your browser. The server never possesses decryption keys and cannot read your content under any circumstances — including legal compulsion. Auto-deletes after reading. Fully open source.
+
+ScorchPad is a pastebin where all encryption happens client-side using the Web Crypto API before any data leaves your device. The decryption key is placed only in the URL fragment (the `#` part), which browsers never transmit in HTTP requests. The server receives and stores only an encrypted blob — mathematically indistinguishable from random noise without the key.
+
+## Open Source
+
+ScorchPad is fully open source. The entire codebase — frontend, backend API, encryption logic, and database schema — is publicly available:
+
+- Repository: https://github.com/scorchpad/scorchpad
+- `src/lib/crypto.ts` — full AES-256-GCM WebCrypto implementation
+- `src/lib/urlFragment.ts` — key encoding and erasure from URL fragments
+- `app/api/paste/create/route.ts` — proof the server receives ciphertext only
+- `middleware.ts` — nonce-based CSP preventing unauthorized script injection
+- `lib/ip.ts` — HMAC-SHA256 IP hashing; raw IPs are never stored
+
+For a zero-knowledge tool, open source is not just a philosophy — it is the only way to substantiate the claims. You should not have to trust our word.
+
+## Cryptographic Implementation
+
+- **AES-256-GCM** — authenticated encryption; tamper-proof (ciphertext modification causes decryption failure, not silent corruption)
+- **PBKDF2-SHA256 at 310,000 iterations** — password hardening meeting the OWASP 2023 minimum; the password is never sent to the server
+- **Zero-knowledge architecture** — the server stores only the encrypted blob; decryption keys are never transmitted
+- **URL fragment erasure** — after decryption, `history.replaceState()` removes the key from the browser address bar and history
+- **Clipboard auto-clear** — 30-second countdown after copying a share link; the clipboard is then overwritten with an empty string
+- **Atomic burn-after-reading** — implemented via a Lua script on Redis; race-condition proof; two concurrent requests cannot both receive the last view
+- **Sandboxed HTML rendering** — HTML pastes are rendered in an `<iframe sandbox="">` with all restrictions active; no JavaScript execution, no same-origin access
+- **Non-extractable CryptoKey** — the decryption key is imported with `extractable: false`; browser extensions cannot read it back
+- **HMAC-SHA256 IP hashing** — rate limits enforced on hashed IPs; raw IP addresses are never stored anywhere
+- **HMAC password proof** — rate-limits brute-force attempts without the server ever receiving the raw password
+- **DOMPurify sanitization** — all decrypted content is sanitized before rendering; belt-and-suspenders alongside the sandboxed iframe
+- **Sentry content scrubbing** — URL fragments and key material are redacted before any error event is transmitted to Sentry
+- **Redis TTL auto-deletion** — pastes expire atomically; no cleanup cron jobs, no window where expired data lingers
+- **Nonce-based CSP** — `unsafe-inline` removed from `script-src`; inline scripts require a per-request nonce
+
+## What ScorchPad Cannot Do
+
+- Read your paste content (holds only encrypted ciphertext)
+- Provide decryption keys to governments or law enforcement (never possesses them)
+- Comply with a court order to produce plaintext (nothing to produce)
+- Recover a lost link (the key is only in the URL fragment, never seen by the server)
+- Access a password-protected paste (password never sent to server)
+- Identify you by IP address (only one-way HMAC hashes stored)
+
+## Threat Model: What an Attacker Gets
+
+| Scenario | Impact |
+|---|---|
+| Database or Redis fully compromised | Zero paste content exposed. Blobs are meaningless without keys. |
+| Full server code compromise (RCE) | Cannot see decryption keys — never in HTTP requests. Cannot retroactively decrypt existing pastes. |
+| Clerk authentication breach | Paste content unaffected. Auth and paste storage are isolated. |
+| HTTPS traffic interception (MITM) | No impact. Attacker sees only ciphertext; key is in URL fragment, never transmitted. |
+| Malicious JavaScript served from domain | **Critical — real threat**. Browser-based encryption cannot defend against a compromised JS pipeline. Mitigations: HSTS, warrant canary, certificate transparency monitoring. |
+
+## Known Limitations
+
+- **JavaScript supply chain**: if the JS delivered to your browser is malicious, it can intercept plaintext before encryption. The warrant canary signals if this has occurred.
+- **Browser extensions**: extensions with broad permissions can read page content before encryption.
+- **No forward secrecy**: paste keys are long-lived; AES-256 is currently quantum-resistant but this is a theoretical long-term consideration.
+- **No independent security audit yet**: the implementation follows NIST and OWASP standards; a third-party audit is planned.
+
+## Warrant Canary
+
+A monthly-updated signed statement confirms no secret government orders, National Security Letters, or gag orders have been received. If the canary has not been updated within 45 days, treat that as a signal.
+
+- Canary page: https://scorchpad.rsaatlabs.com/warrant-canary
+- Raw signed text: https://scorchpad.rsaatlabs.com/warrant-canary.txt
+- PGP key: https://scorchpad.rsaatlabs.com/pgp-key.txt
+
+## Pricing
+
+- **Free**: 10 pastes/day, 24-hour expiry, up to 10 views, password protection included
+- **Pro Annual**: ₹999/year (~₹83/month) — 90-day expiry, unlimited views, 1 MB paste size
+
+## Links
+
+- [Full security architecture documentation](https://scorchpad.rsaatlabs.com/about)
+- [Pricing](https://scorchpad.rsaatlabs.com/pricing)
+- [Warrant canary](https://scorchpad.rsaatlabs.com/warrant-canary)
+- [Privacy policy](https://scorchpad.rsaatlabs.com/privacy)
+- [Terms of service](https://scorchpad.rsaatlabs.com/terms)
+- [Security contact](https://scorchpad.rsaatlabs.com/.well-known/security.txt)
+- [GitHub repository](https://github.com/scorchpad/scorchpad)
+- [Built by Rsaat Labs](https://rsaatlabs.com)

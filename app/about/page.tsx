@@ -3,7 +3,17 @@ import { Shield, Lock, Eye, Zap, Key, Code, AlertTriangle, CheckCircle, Database
 
 export const metadata: Metadata = {
   title: 'About',
+  description:
+    'ScorchPad is a fully open-source, zero-knowledge encrypted pastebin. ' +
+    'AES-256-GCM encryption happens in your browser — the server never sees your decryption key. ' +
+    'Features: burn-after-reading, URL-fragment erasure, clipboard auto-clear, atomic burn-after-reading, ' +
+    'HMAC-SHA256 IP hashing, and a warrant canary. Source code: github.com/scorchpad/scorchpad.',
   robots: { index: true, follow: true },
+  alternates: {
+    types: {
+      'text/plain': 'https://scorchpad.rsaatlabs.com/llms-full.txt',
+    },
+  },
 };
 
 const CRYPTO_SECTIONS = [
@@ -220,9 +230,94 @@ const LIMITATIONS = [
   },
 ];
 
+// JSON-LD for AI crawlers and structured data consumers.
+// Placed at the top of the component so it appears early in the HTML body —
+// well before the page's lengthy security sections — ensuring it is never
+// truncated by tools that apply token or byte limits to fetched pages.
+// <script type="application/ld+json"> is NOT subject to the nonce-based CSP
+// because the browser treats it as inert structured data, not executable JS.
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'ScorchPad',
+  url: 'https://scorchpad.rsaatlabs.com',
+  applicationCategory: 'SecurityApplication',
+  operatingSystem: 'Web',
+  offers: [
+    {
+      '@type': 'Offer',
+      name: 'Free',
+      price: '0',
+      priceCurrency: 'INR',
+      description: '10 pastes/day, 24-hour expiry, up to 10 views, password protection included',
+    },
+    {
+      '@type': 'Offer',
+      name: 'Pro Annual',
+      price: '999',
+      priceCurrency: 'INR',
+      billingDuration: 'P1Y',
+      description: '90-day expiry, unlimited views, 1 MB paste size',
+    },
+  ],
+  description:
+    'Zero-knowledge encrypted pastebin. AES-256-GCM encryption in the browser. ' +
+    'The server never possesses decryption keys. Fully open source.',
+  isAccessibleForFree: true,
+  codeRepository: 'https://github.com/scorchpad/scorchpad',
+  license: 'https://github.com/scorchpad/scorchpad/blob/main/LICENSE',
+  keywords: [
+    'zero-knowledge encryption', 'AES-256-GCM', 'encrypted pastebin',
+    'burn after reading', 'one-time secret', 'open source', 'self-hosted',
+    'PBKDF2', 'warrant canary', 'client-side encryption',
+  ],
+  creator: {
+    '@type': 'Organization',
+    name: 'Rsaat Labs',
+    url: 'https://rsaatlabs.com',
+  },
+  mainEntityOfPage: 'https://scorchpad.rsaatlabs.com/about',
+  sameAs: [
+    'https://scorchpad.rsaatlabs.com/llms-full.txt',
+    'https://scorchpad.rsaatlabs.com/llms.txt',
+    'https://github.com/scorchpad/scorchpad',
+  ],
+  featureList: [
+    'AES-256-GCM authenticated encryption',
+    'PBKDF2-SHA256 at 310,000 iterations for password-protected pastes',
+    'Zero-knowledge architecture — server never receives decryption keys',
+    'URL fragment erasure after decryption via history.replaceState()',
+    'Clipboard auto-clear after 30 seconds',
+    'Atomic burn-after-reading via Lua script on Redis (race-condition proof)',
+    'Sandboxed HTML paste rendering (iframe sandbox="")',
+    'Non-extractable CryptoKey import (extractable: false)',
+    'HMAC-SHA256 IP hashing — raw IPs never stored',
+    'DOMPurify sanitization on all decrypted content',
+    'Nonce-based Content Security Policy (unsafe-inline removed)',
+    'Redis TTL auto-deletion — no cleanup cron jobs',
+    'Sentry content scrubbing — key material redacted before transmission',
+    'Monthly warrant canary',
+    'Fully open source — github.com/scorchpad/scorchpad',
+  ],
+};
+
 export default function AboutPage() {
   return (
     <div className="pt-12 pb-24 max-w-3xl mx-auto w-full px-4">
+
+      {/*
+       * JSON-LD structured data — rendered at the very top of the component
+       * so AI tools and search crawlers encounter it in the first kilobytes of
+       * HTML, before the lengthy security sections that can push the Open Source
+       * section and other key data past token or byte limits.
+       *
+       * type="application/ld+json" is not executable JavaScript and is
+       * therefore NOT subject to the nonce-based CSP in middleware.ts.
+       */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
 
       {/* Hero */}
       <div className="mb-14">

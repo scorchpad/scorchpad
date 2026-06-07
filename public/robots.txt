@@ -4,3 +4,7 @@ Disallow: /p/
 Allow: /
 
 Sitemap: https://scorchpad.rsaatlabs.com/sitemap.xml
+
+# AI / LLM crawlers — machine-readable service description
+# Full detail:    https://scorchpad.rsaatlabs.com/llms-full.txt
+# Summary:        https://scorchpad.rsaatlabs.com/llms.txt
