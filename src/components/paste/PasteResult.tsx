@@ -28,7 +28,10 @@ import { buildShareableLink, buildPasswordShareableLink } from '../../lib/urlFra
 
 export function PasteResult() {
   const store = usePasteStore();
-  const [clipboardDenied, setClipboardDenied] = useState(false);
+  // null  = user hasn't interacted yet  → show pre-copy notice
+  // false = copy succeeded / access granted → hide everything
+  // true  = permission denied              → show red warning
+  const [clipboardDenied, setClipboardDenied] = useState<boolean | null>(null);
 
   if (!store.createdId) return null;
 
@@ -73,7 +76,7 @@ export function PasteResult() {
         />
         <CopyButton
           textToCopy={shareUrl}
-          onPermissionDenied={isKeyUrl ? setClipboardDenied : undefined}
+          onPermissionDenied={isKeyUrl ? (denied: boolean) => setClipboardDenied(denied) : undefined}
           className="px-6 py-2.5 bg-indigo-600 dark:bg-white text-white dark:text-black text-[10px] font-bold rounded-lg hover:bg-indigo-700 dark:hover:bg-orange-500 dark:hover:text-white transition-all uppercase tracking-widest shrink-0 flex items-center justify-center gap-2"
         >
           COPY LINK
@@ -84,7 +87,7 @@ export function PasteResult() {
            Shown before the user has interacted with the copy button (or
            after a successful grant). Explains why we need clipboard access
            so the browser prompt doesn't appear out of nowhere.            */}
-      {isKeyUrl && !clipboardDenied && (
+      {isKeyUrl && clipboardDenied === null && (
         <p className="text-[11px] font-mono text-gray-400 dark:text-white/30 leading-relaxed mb-4 px-1">
           🔒 Clicking{' '}
           <strong className="text-gray-600 dark:text-white/50">COPY LINK</strong> will
@@ -97,26 +100,25 @@ export function PasteResult() {
            Shown when the user denies (or has previously denied) the prompt.
            The "Grant clipboard access" button calls writeText() on a user
            gesture, which re-triggers Chrome's permission prompt.          */}
-      {isKeyUrl && clipboardDenied && (
+      {isKeyUrl && clipboardDenied === true && (
         <div
           role="alert"
           className="bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-500/40 p-4 mb-4 rounded-lg"
         >
           <p className="text-[11px] font-mono font-bold text-red-700 dark:text-red-400 uppercase tracking-wider mb-2">
-            ⚠️ Clipboard access denied
+            ⚠️ Clipboard access not granted
           </p>
           <p className="text-[11px] font-mono text-red-600/80 dark:text-red-300/70 leading-relaxed mb-3">
-            ScorchPad cannot automatically clear the decryption key from your
-            clipboard after 30 seconds. This key grants full access to your
-            paste — make sure you clear your clipboard manually before closing
-            this tab or sharing your screen, and ensure this key reaches no one
-            unintended.
+            You have not given ScorchPad access to your clipboard. The
+            decryption key will <strong>not</strong> be automatically cleared
+            after 30 seconds — make sure you clear your clipboard manually and
+            ensure this key does not leak to anyone.
           </p>
           <button
             onClick={handleRequestPermission}
             className="text-[10px] font-mono font-bold uppercase tracking-widest px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
           >
-            Grant clipboard access
+            Request clipboard permission
           </button>
         </div>
       )}
