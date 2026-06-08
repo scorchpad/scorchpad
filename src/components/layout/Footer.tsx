@@ -9,6 +9,7 @@ export function Footer() {
         <Link href="/privacy" className="text-[10px] text-gray-500 dark:text-white/30 uppercase tracking-widest hover:text-gray-900 dark:hover:text-white transition">Privacy</Link>
         <Link href="/terms" className="text-[10px] text-gray-500 dark:text-white/30 uppercase tracking-widest hover:text-gray-900 dark:hover:text-white transition">Terms</Link>
         <Link href="/security" className="text-[10px] text-gray-500 dark:text-white/30 uppercase tracking-widest hover:text-gray-900 dark:hover:text-white transition">Security</Link>
+        <Link href="/audit" className="text-[10px] text-gray-500 dark:text-white/30 uppercase tracking-widest hover:text-gray-900 dark:hover:text-white transition">Audit</Link>
         <Link href="/warrant-canary" className="text-[10px] text-gray-500 dark:text-white/30 uppercase tracking-widest hover:text-gray-900 dark:hover:text-white transition">Canary</Link>
       </div>
     </footer>
