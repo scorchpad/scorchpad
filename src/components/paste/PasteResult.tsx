@@ -2,36 +2,35 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Shown after successful paste creation. Displays the shareable link.
 //
-// FIX: Burn-after-reading (maxViews=1) pastes now show a prominent red
-// warning explaining that the link self-destructs after ONE view by ANYONE
-// (including the creator). Previously users accidentally opened their own link
-// before sending it to the recipient, consuming the one allowed view and
-// causing "This paste has expired or no longer exists" for the recipient.
+// Clipboard permission states (null | false | true):
+//   null  → user hasn't clicked COPY yet          → show grey notice
+//   false → copy succeeded, auto-clear is running  → show countdown only
+//   true  → clipboard access denied               → show red warning box
 //
-// CLIPBOARD PERMISSION:
-// For key-in-URL pastes, the auto-clear feature (overwriting the clipboard
-// after 30s) requires the clipboard-write permission. We:
-//   1. Show a pre-emptive notice explaining why we need the permission,
-//      so the browser prompt makes sense when it appears.
-//   2. If the user denies (or has previously denied) permission, replace
-//      the notice with a red warning box and a "Grant clipboard access"
-//      button that re-triggers the browser permission prompt via a fresh
-//      user-gesture-bound writeText() call.
+// Chrome auto-grants clipboard-write on user gesture. The denied state only
+// triggers if the site is blocked under Site Settings → Clipboard, or if the
+// tab loses focus between copy and auto-clear.
 // ─────────────────────────────────────────────────────────────────────────────
 
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { usePasteStore } from '../../store/pasteStore';
 import { CopyButton } from '../ui/CopyButton';
 import { buildShareableLink, buildPasswordShareableLink } from '../../lib/urlFragment';
 
 export function PasteResult() {
   const store = usePasteStore();
-  // null  = user hasn't interacted yet  → show pre-copy notice
-  // false = copy succeeded / access granted → hide everything
-  // true  = permission denied              → show red warning
+
+  // null  = not yet interacted  → show pre-copy notice
+  // false = copy succeeded      → hide notice, show countdown
+  // true  = access denied       → show red warning box
   const [clipboardDenied, setClipboardDenied] = useState<boolean | null>(null);
+
+  // Stable reference so CopyButton's useEffect doesn't re-run every render.
+  const handlePermissionDenied = useCallback((denied: boolean) => {
+    setClipboardDenied(denied);
+  }, []);
 
   if (!store.createdId) return null;
 
@@ -46,16 +45,16 @@ export function PasteResult() {
   const isBurnAfterReading = store.maxViews === 1 && !store.isPasswordPaste;
   const isKeyUrl = shareUrl.includes('#');
 
-  // Called when the user clicks "Grant clipboard access".
-  // Calling writeText() on a user gesture re-triggers the browser permission
-  // prompt even after a previous denial. If they click Allow, the promise
-  // resolves and setClipboardDenied(false) clears the warning.
+  // Clicking this button calls writeText() on a fresh user gesture.
+  // In Chrome this re-triggers the Site Settings permission check —
+  // if they unblocked clipboard in site settings, this will now succeed
+  // and clear the warning. If still blocked, the warning stays.
   const handleRequestPermission = async () => {
     try {
       await navigator.clipboard.writeText(shareUrl);
       setClipboardDenied(false);
     } catch {
-      // Still denied or user dismissed — warning stays visible.
+      // Still denied — warning stays.
     }
   };
 
@@ -76,30 +75,31 @@ export function PasteResult() {
         />
         <CopyButton
           textToCopy={shareUrl}
-          onPermissionDenied={isKeyUrl ? (denied: boolean) => setClipboardDenied(denied) : undefined}
+          onPermissionDenied={isKeyUrl ? handlePermissionDenied : undefined}
           className="px-6 py-2.5 bg-indigo-600 dark:bg-white text-white dark:text-black text-[10px] font-bold rounded-lg hover:bg-indigo-700 dark:hover:bg-orange-500 dark:hover:text-white transition-all uppercase tracking-widest shrink-0 flex items-center justify-center gap-2"
         >
           COPY LINK
         </CopyButton>
       </div>
 
-      {/* ── Pre-permission notice ─────────────────────────────────────────
-           Shown before the user has interacted with the copy button (or
-           after a successful grant). Explains why we need clipboard access
-           so the browser prompt doesn't appear out of nowhere.            */}
+      {/* ── Pre-copy notice ───────────────────────────────────────────────
+           Only shown before the user clicks COPY. Explains the auto-clear.
+           Disappears as soon as copy is attempted (success or failure).   */}
       {isKeyUrl && clipboardDenied === null && (
         <p className="text-[11px] font-mono text-gray-400 dark:text-white/30 leading-relaxed mb-4 px-1">
-          🔒 Clicking{' '}
-          <strong className="text-gray-600 dark:text-white/50">COPY LINK</strong> will
-          request clipboard access so ScorchPad can automatically erase the
-          decryption key from your clipboard after 30 seconds.
+          🔒 ScorchPad will automatically erase the decryption key from your
+          clipboard 30 seconds after you copy — so clipboard managers or shared
+          screens cannot expose it.
         </p>
       )}
 
-      {/* ── Clipboard permission denied warning ───────────────────────────
-           Shown when the user denies (or has previously denied) the prompt.
-           The "Grant clipboard access" button calls writeText() on a user
-           gesture, which re-triggers Chrome's permission prompt.          */}
+      {/* ── Clipboard access denied warning ───────────────────────────────
+           Shown when writeText() throws NotAllowedError — meaning the site
+           is blocked under Chrome → Site Settings → Clipboard (or the tab
+           lost focus between copy and auto-clear at T=30s).
+           "Request clipboard permission" retries writeText() on a fresh
+           user gesture, which re-evaluates site permissions without
+           requiring the user to navigate to site settings.               */}
       {isKeyUrl && clipboardDenied === true && (
         <div
           role="alert"
@@ -123,11 +123,9 @@ export function PasteResult() {
         </div>
       )}
 
-      {/* ── Burn-after-reading: prominent warning ─────────────────────────
-           This is the most common source of confusion: the creator opens
-           the link themselves to test it, which burns the paste before the
-           recipient sees it. The warning is styled more aggressively than
-           the general share-carefully notice below.                        */}
+      {/* ── Burn-after-reading warning ────────────────────────────────────
+           Most common confusion: creator opens link themselves, burns it
+           before recipient sees it.                                        */}
       {isBurnAfterReading && (
         <div
           role="alert"
