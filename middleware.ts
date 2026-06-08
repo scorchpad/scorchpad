@@ -48,6 +48,7 @@ const isPublicRoute = createRouteMatcher([
   '/terms',
   '/warrant-canary',
   '/security',
+  '/audit',
   '/sign-in(.*)',
   '/sign-up(.*)',
   '/p/(.*)',
