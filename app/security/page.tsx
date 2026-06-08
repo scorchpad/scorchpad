@@ -22,10 +22,10 @@ export default function SecurityPage() {
         <p className="text-sm text-gray-600 dark:text-white/60 leading-relaxed mb-4">
           Email{' '}
           <a
-            href="mailto:security@scorchpad.rsaatlabs.com"
+            href="mailto:rsaatlabs@gmail.com"
             className="text-indigo-600 dark:text-orange-400 underline hover:opacity-80 transition-opacity"
           >
-            security@scorchpad.rsaatlabs.com
+            rsaatlabs@gmail.com
           </a>{' '}
           with a clear description of the issue, reproduction steps, and any
           supporting evidence. Encrypt sensitive reports with our PGP key at{' '}

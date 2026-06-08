@@ -225,8 +225,8 @@ const LIMITATIONS = [
     body: 'Unlike HTTPS session keys, paste keys are long-lived. If the share URL is intercepted and archived, and the encryption is later broken (by advances in cryptanalysis or quantum computing), stored pastes could be decrypted retroactively. AES-256 is currently considered quantum-resistant, but this is a theoretical long-term consideration.',
   },
   {
-    title: 'No independent security audit',
-    body: 'ScorchPad has not yet undergone a third-party cryptographic audit. The implementation follows established standards (NIST, OWASP), but independent verification would provide stronger assurance. We intend to commission an audit as the product matures.',
+    title: 'AI-assisted audit completed; formal third-party audit pending',
+    body: 'A pre-launch code review was conducted by two independent Claude (Anthropic) AI instances reviewing the full source codebase separately. All findings were patched before public deployment. A formal audit by a named independent security firm has not yet been commissioned. AI-assisted review provides meaningful assurance on implementation correctness, particularly for code that wraps well-specified primitives like the Web Crypto API. It does not replace adversarial testing, dynamic analysis, or supply chain verification by a human auditor. Full findings are documented at /audit.',
   },
 ];
 
