@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { AuditAccordion } from '../src/components/AuditAccordion';
+import { AuditAccordion } from '../../src/components/AuditAccordion';
 
 export const metadata: Metadata = {
   title: 'Security Audit Log',
