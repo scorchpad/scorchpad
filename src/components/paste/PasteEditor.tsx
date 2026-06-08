@@ -88,12 +88,19 @@ function formatRetryDelay(seconds: number): string {
  * Maps an ApiError thrown by createPaste() to a ReactNode for the error banner.
  *
  * 429 RATE LIMIT:
- *   The server's `body.error` is now the actual message (e.g. "Daily paste
- *   limit reached.") instead of "API error 429". We append a retry countdown
- *   from ApiError.retryAfter, and an inline CTA link:
- *     anonymous → /sign-up  (free tier = 10/day)
- *     free      → /pricing  (Pro = 50+/day)
- *     pro       → no link, just the retry time
+ *   The server's `body.error` is the actual message (e.g. "Daily paste
+ *   limit reached."). We append a retry countdown from ApiError.retryAfter,
+ *   and an inline CTA link determined by server-supplied URL signals:
+ *     err.signUpUrl present  → caller is anonymous → "Sign in" (10/day)
+ *     err.upgradeUrl present → caller is free      → "Upgrade to Pro" (50+/day)
+ *     neither present        → caller is pro       → retry time only
+ *
+ *   WHY SERVER SIGNALS INSTEAD OF store.tier:
+ *   store.tier initialises as 'anonymous' and is updated asynchronously by
+ *   useSubscription(). If the 429 fires before that fetch settles, we would
+ *   read the wrong tier and show pro/free users the anonymous "Sign in" CTA.
+ *   The server's rateLimitedResponse() already encodes the correct tier via
+ *   signUpUrl / upgradeUrl / neither, so we trust those instead.
  *
  * 403 FEATURE GATE:
  *   The server already returns a human-readable message for each gate
@@ -104,10 +111,7 @@ function formatRetryDelay(seconds: number): string {
  *   Use the server's message if available (ApiError.message has body.error
  *   since the api.mock.ts fix). Fall back to a generic message.
  */
-function buildErrorNode(
-  err: unknown,
-  tier: 'anonymous' | 'free' | 'pro',
-): ReactNode {
+function buildErrorNode(err: unknown): ReactNode {
   if (!(err instanceof ApiError)) {
     return err instanceof Error
       ? err.message
@@ -121,14 +125,15 @@ function buildErrorNode(
         ? `Try again in ~${formatRetryDelay(err.retryAfter)}.`
         : 'Please wait before trying again.';
 
-      if (tier === 'anonymous') {
-        // Anonymous → nudge to sign up (10 free pastes/day)
-        const ctaHref = err.signUpUrl ?? '/sign-up';
+      // Branch on server-supplied signals — never on store.tier (stale risk).
+      // rateLimitedResponse() embeds signUpUrl for anon, upgradeUrl for free,
+      // and neither for pro. These are always authoritative.
+      if (err.signUpUrl) {
         return (
           <>
             {err.message} {retryText}{' '}
             <Link
-              href={ctaHref}
+              href={err.signUpUrl}
               className="underline font-bold hover:opacity-80 transition-opacity"
             >
               Sign in
@@ -138,14 +143,12 @@ function buildErrorNode(
         );
       }
 
-      if (tier === 'free') {
-        // Free → nudge to upgrade (50+/day Pro)
-        const ctaHref = err.upgradeUrl ?? '/pricing';
+      if (err.upgradeUrl) {
         return (
           <>
             {err.message} {retryText}{' '}
             <Link
-              href={ctaHref}
+              href={err.upgradeUrl}
               className="underline font-bold hover:opacity-80 transition-opacity"
             >
               Upgrade to Pro
@@ -155,7 +158,7 @@ function buildErrorNode(
         );
       }
 
-      // Pro → they've hit their plan cap; just show retry time
+      // No URLs → pro (hit plan cap); show retry time only
       return <>{err.message} {retryText}</>;
     }
 
@@ -250,7 +253,7 @@ export function PasteEditor() {
     } catch (err: unknown) {
       // buildErrorNode maps ApiError subtypes to contextual messages with CTA links.
       // For non-ApiError instances (e.g. crypto failures), it falls back to err.message.
-      setError(buildErrorNode(err, store.tier));
+      setError(buildErrorNode(err));
     }
   };
 
