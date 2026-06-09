@@ -31,7 +31,7 @@ GCM mode provides both confidentiality and authenticity — meaning it is imposs
 
 The iteration count of 310,000 meets the OWASP 2023 minimum recommendation. This means an attacker trying to brute-force the password must perform 310,000 SHA-256 operations per guess — limiting an attacker to roughly a few thousand guesses per second per GPU.
 
-The PBKDF2 salt is a cryptographically random 32-byte value generated fresh for each paste. The server stores only the salt and a rate-limiting proof (an HMAC-SHA256 token), never the password or the derived key.
+The PBKDF2 salt is a cryptographically random 32-byte value generated fresh for each paste. The server stores only the salt — never the password, the derived key, or any password-derived proof token.
 
 Note: for password-protected pastes, there is no key in the URL fragment at all. The receiver must enter the correct password, from which their browser independently derives the identical AES key and decrypts locally. The URL is meaningless without the password.`,
   },
@@ -105,12 +105,12 @@ This means even in a full database breach, no IP addresses can be extracted.`,
   },
   {
     icon: Shield,
-    title: 'HMAC Password Proof — Rate-Limit Without Exposure',
-    content: `For password-protected pastes, the server needs to rate-limit brute-force attempts without ever receiving the password. This is solved using an HMAC-SHA256 proof token.
+    title: 'Password Rate Limiting — Redis Attempt Counter',
+    content: `For password-protected pastes, the verify-password endpoint enforces a strict attempt limit without ever receiving the password. The server uses a sliding window counter stored in Redis, keyed on a combination of the hashed IP address and paste ID.
 
-When you enter a password, your browser computes HMAC-SHA256(password, passwordSalt). This proof token is sent to the server. The server stores it and checks it on subsequent verify-password calls to enforce rate limits (5 attempts per 15 minutes per paste).
+The counter allows 5 attempts per 15 minutes per paste per hashed IP. Once exhausted, the endpoint returns HTTP 429 Too Many Requests and rejects all further attempts until the window resets. The counter auto-expires after 15 minutes with no persistent record beyond that window.
 
-The server never receives the raw password, and the HMAC proof cannot be reversed to recover the password. Decryption still happens entirely in your browser after the server returns the encrypted blob.`,
+The password is never transmitted to our server at any point — not as plaintext, not as a hash, and not as any derived value. The verify-password endpoint receives only an encrypted blob check request. Rate limiting is enforced entirely by counting attempts, not by inspecting any password-derived credential.`,
   },
   {
     icon: Code,
@@ -171,7 +171,7 @@ const BREACH_SCENARIOS = [
     severityLabel: 'Low impact',
     what: 'Attacker obtains encrypted blobs, IVs, PBKDF2 salts, HMAC proof tokens, paste metadata (expiry, view count, language, size in bytes), hashed IPs, and subscription data.',
     impact: 'Zero paste content exposed. The encrypted blobs are mathematically meaningless without decryption keys. Keys were never sent to the server. Hashed IPs cannot be reversed. HMAC proof tokens cannot reveal passwords.',
-    note: 'The attacker could attempt offline brute-force against password-protected pastes using the HMAC proof tokens, but PBKDF2 at 310,000 iterations makes this computationally expensive.',
+    note: 'The attacker could attempt offline brute-force against password-protected pastes by trying candidate passwords, deriving the PBKDF2 key, and attempting AES-256-GCM decryption. PBKDF2 at 310,000 iterations makes this computationally expensive. No proof token or server-stored password-derived value exists to assist validation.',
   },
   {
     threat: 'Full server code compromise (RCE)',

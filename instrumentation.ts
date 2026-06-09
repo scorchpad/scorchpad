@@ -34,6 +34,17 @@
 //
 //   scrubFragmentFromEvent() is registered as beforeSend in both the nodejs
 //   and edge init calls. See src/lib/sentry.ts for the full security rationale.
+//
+//   FIX H3 (complete) — Sentry baggage header propagation via SSR responses:
+//     middleware.ts strips `baggage` and `sentry-trace` from NextResponse
+//     objects, but the Sentry SDK can also inject these headers during the
+//     server-side rendering pipeline — AFTER middleware has already run. The
+//     middleware deletion therefore does not reach headers added at render time.
+//     Setting tracePropagationTargets: [] below disables all outgoing trace
+//     context propagation at the SDK level, which prevents the SDK from
+//     injecting sentry-public_key and sentry-org_id into any server response
+//     headers. The middleware deletion in middleware.ts is retained as a
+//     belt-and-suspenders layer for any edge cases.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as Sentry from '@sentry/nextjs';
@@ -53,6 +64,23 @@ export function register(): void {
     // Sample 10% of traces in production; capture everything in dev so you
     // can see full traces locally without sampling gaps.
     tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
+
+    // FIX H3 (complete): Disable all outgoing trace context propagation.
+    //
+    // The Sentry SDK uses tracePropagationTargets to decide which outgoing
+    // requests (and, in Next.js SSR, which server responses) should have
+    // `sentry-trace` and `baggage` headers injected for distributed tracing.
+    // An empty array disables propagation entirely, preventing the SDK from
+    // emitting sentry-public_key and sentry-org_id into any HTTP header.
+    //
+    // middleware.ts also strips these from NextResponse objects, but that
+    // deletion runs before SSR — headers Sentry adds during rendering are
+    // not covered by it. This SDK-level disable closes that gap.
+    //
+    // Tradeoff: server→server distributed traces will not propagate Sentry
+    // context. Acceptable: ScorchPad has no external backend services to
+    // propagate to, and all frontend tracing originates from the client SDK.
+    tracePropagationTargets: [] as string[],
 
     // SECURITY: strip decryption keys from every captured event.
     // See src/lib/sentry.ts for the full explanation.

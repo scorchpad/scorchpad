@@ -67,7 +67,6 @@ export default function PrivacyPage() {
         <List items={[
           'Encrypted ciphertext blobs — unreadable without the decryption key, which we never have',
           'Initialization vectors (IVs) — not sensitive without the key',
-          'Password proof hashes (HMAC-SHA256) — used only for brute-force rate limiting, cannot be reversed to recover the password',
           'PBKDF2 salts — not sensitive on their own',
           'Paste metadata: expiry timestamp, view count limit, syntax language tag, ciphertext size in bytes',
           'All paste data auto-deletes at TTL expiry or upon reaching the maximum view count',
@@ -95,7 +94,7 @@ export default function PrivacyPage() {
           'Decryption keys — architecturally impossible',
           'URL fragments — never transmitted to us by browsers',
           'Raw IP addresses — only one-way HMAC hashes',
-          'Passwords — only an HMAC proof token for rate limiting',
+          'Passwords — or any password-derived value; the password is never transmitted to our servers under any circumstances',
           'Browser fingerprints, device identifiers, or tracking identifiers',
           'Browsing history, navigation patterns, or analytics data',
         ]} />
