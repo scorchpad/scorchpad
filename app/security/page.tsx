@@ -1,10 +1,5 @@
 import type { Metadata } from 'next';
 
-// Statically pre-generate at build time — makes page immediately crawlable
-// by AI agents and search engines without hitting the Next.js server runtime.
-export const dynamic = 'force-static';
-
-
 export const metadata: Metadata = {
   title: 'Security — Responsible Disclosure',
 };

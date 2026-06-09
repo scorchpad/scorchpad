@@ -1,11 +1,6 @@
 import type { Metadata } from 'next';
 import { Shield, Lock, Eye, Zap, Key, Code, AlertTriangle, CheckCircle, Database, Server, Globe, FileWarning, Bug, BarChart3, Github } from 'lucide-react';
 
-// Statically pre-generate at build time — makes page immediately crawlable
-// by AI agents and search engines without hitting the Next.js server runtime.
-export const dynamic = 'force-static';
-
-
 export const metadata: Metadata = {
   title: 'About',
   description:
