@@ -538,7 +538,6 @@ export function AuditAccordion() {
             </div>
 
           </div>
-        </div>
       </div>
 
       {/* Placeholder for future audits */}
