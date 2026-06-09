@@ -1,3 +1,6 @@
+# ScorchPad — robots.txt
+# https://scorchpad.rsaatlabs.com
+
 User-agent: *
 Disallow: /api/
 Disallow: /p/
@@ -5,6 +8,76 @@ Allow: /
 
 Sitemap: https://scorchpad.rsaatlabs.com/sitemap.xml
 
-# AI / LLM crawlers — machine-readable service description
-# Full detail:    https://scorchpad.rsaatlabs.com/llms-full.txt
-# Summary:        https://scorchpad.rsaatlabs.com/llms.txt
+# ── AI / LLM crawlers ──────────────────────────────────────────────────────────
+# All public informational pages are intentionally open to AI indexing.
+# Paste viewer routes (/p/) are disallowed — paste content is ephemeral,
+# encrypted, and must not be indexed or cached.
+#
+# Machine-readable service descriptions (llms.txt spec):
+#   Summary:   https://scorchpad.rsaatlabs.com/llms.txt
+#   Full:      https://scorchpad.rsaatlabs.com/llms-full.txt
+
+# Anthropic (Claude)
+User-agent: ClaudeBot
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+User-agent: anthropic-ai
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+# OpenAI (ChatGPT, SearchGPT)
+User-agent: GPTBot
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+User-agent: ChatGPT-User
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+User-agent: OAI-SearchBot
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+# Google (Gemini, AI Overviews)
+User-agent: Google-Extended
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+# Meta (Llama)
+User-agent: FacebookBot
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+# Common (Perplexity, You.com, etc.)
+User-agent: PerplexityBot
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+User-agent: YouBot
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+User-agent: Diffbot
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+User-agent: cohere-ai
+Disallow: /api/
+Disallow: /p/
+Allow: /
+
+User-agent: Bytespider
+Disallow: /api/
+Disallow: /p/
+Allow: /

@@ -380,23 +380,33 @@ function FindingRow({ f }: { f: Finding }) {
         </div>
       </button>
 
-      {open && (
-        <div className="px-4 pb-4 pt-2 bg-gray-50/80 dark:bg-[#080808] border-t border-gray-100 dark:border-white/5 space-y-2">
-          <div>
-            <span className="text-[9px] uppercase tracking-widest text-gray-400 dark:text-white/25">File: </span>
-            <span className="text-[10px] font-mono text-indigo-600 dark:text-orange-400">{f.file}</span>
-          </div>
-          <p className="text-[11px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide">
-            {f.summary}
-          </p>
+      {/* FIX: AI/crawler crawlability.
+           OLD: {open && (...)} — content was absent from the HTML when collapsed;
+                crawlers received only accordion titles, never the finding details.
+           NEW: always render the detail div; use `hidden` (display:none) to hide it
+                visually when collapsed. The full text of every finding — file path
+                and summary — is present in the initial HTML and readable by any
+                crawler or AI that parses page source. */}
+      <div
+        className={`px-4 pb-4 pt-2 bg-gray-50/80 dark:bg-[#080808] border-t border-gray-100 dark:border-white/5 space-y-2${open ? '' : ' hidden'}`}
+        aria-hidden={!open}
+      >
+        <div>
+          <span className="text-[9px] uppercase tracking-widest text-gray-400 dark:text-white/25">File: </span>
+          <span className="text-[10px] font-mono text-indigo-600 dark:text-orange-400">{f.file}</span>
         </div>
-      )}
+        <p className="text-[11px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide">
+          {f.summary}
+        </p>
+      </div>
     </div>
   );
 }
 
 export function AuditAccordion() {
-  const [open, setOpen] = useState(false);
+  // FIX: default to open so the full audit overview is visible on page load
+  // for both users and crawlers. Users can still collapse it via the header button.
+  const [open, setOpen] = useState(true);
 
   const totalFixed  = FINDINGS.filter(f => f.status === 'fixed').length;
   const totalNoted  = FINDINGS.filter(f => f.status === 'noted').length;
@@ -437,9 +447,17 @@ export function AuditAccordion() {
           </div>
         </button>
 
-        {/* Collapsible content */}
-        {open && (
-          <div className="border-t border-gray-100 dark:border-white/5">
+        {/* Collapsible content — FIX: AI/crawler crawlability.
+             OLD: {open && (...)} with useState(false) — the entire audit body
+                  (overview table, all findings, verified-clean list) was absent
+                  from the initial HTML. Crawlers saw only the accordion header.
+             NEW: always render the body div; use `hidden` to hide it visually
+                  when collapsed. Default state changed to true (open) so the
+                  full audit is visible on first load for both humans and crawlers. */}
+        <div
+          className={`border-t border-gray-100 dark:border-white/5${open ? '' : ' hidden'}`}
+          aria-hidden={!open}
+        >
 
             {/* Audit metadata */}
             <div className="px-5 py-5 bg-gray-50/80 dark:bg-[#080808] border-b border-gray-100 dark:border-white/5">
@@ -520,7 +538,7 @@ export function AuditAccordion() {
             </div>
 
           </div>
-        )}
+        </div>
       </div>
 
       {/* Placeholder for future audits */}

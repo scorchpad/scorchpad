@@ -5,14 +5,35 @@ import { Shield } from 'lucide-react';
 const CONSENT_KEY = 'sp_consent_v2';
 
 export function ConsentGate({ children }: { children: React.ReactNode }) {
-  const [showModal, setShowModal] = useState(true);
+  // FIX: AI/crawler crawlability.
+  //
+  // OLD: useState(true)
+  //   The initial SSR render (and React's first client render) always produced
+  //   the modal overlay in the HTML. Crawlers that parse raw HTML received
+  //   the overlay markup on top of every page's content.
+  //
+  // NEW: useState(false) + mounted guard
+  //   Both the SSR pass and React's first synchronous client render agree:
+  //   showModal = false → no hydration mismatch, no modal in the initial HTML.
+  //   After mount, useEffect checks localStorage and shows the modal only for
+  //   users who have not yet consented. First-time human visitors will see a
+  //   brief (~16 ms) flash of content before the modal appears — an acceptable
+  //   UX trade-off for full crawlability. Returning visitors (consent stored)
+  //   never see the flash at all.
+  const [mounted, setMounted]     = useState(false);
+  const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     try {
-      if (localStorage.getItem(CONSENT_KEY) === 'accepted') {
-        setShowModal(false);
+      if (localStorage.getItem(CONSENT_KEY) !== 'accepted') {
+        setShowModal(true);
       }
-    } catch {}
+    } catch {
+      // If localStorage is unavailable (private browsing, security policy),
+      // show the modal so the user still has a chance to accept/decline.
+      setShowModal(true);
+    }
   }, []);
 
   const handleAccept = () => {
@@ -24,6 +45,7 @@ export function ConsentGate({ children }: { children: React.ReactNode }) {
     window.location.replace('https://www.google.com');
   };
 
+  // Block Escape key while modal is visible — same as before.
   useEffect(() => {
     if (!showModal) return;
     const block = (e: KeyboardEvent) => {
@@ -36,7 +58,11 @@ export function ConsentGate({ children }: { children: React.ReactNode }) {
   return (
     <>
       {children}
-      {showModal && (
+      {/* Only render the modal after mount AND when consent is needed.
+          `mounted` guard prevents the modal from appearing in the SSR HTML
+          or during React's first synchronous client render, ensuring crawlers
+          always receive clean, unobstructed page content. */}
+      {mounted && showModal && (
         <div className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
           <div className="w-full max-w-lg bg-white dark:bg-[#0A0A0A] border border-gray-200 dark:border-white/10 rounded-2xl shadow-2xl p-8">
 

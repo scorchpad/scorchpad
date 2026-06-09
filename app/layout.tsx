@@ -51,7 +51,34 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
-// FIX #2: RootLayout is now async so we can await headers() to read the nonce.
+// FIX: AI/crawler crawlability — bot detection helper.
+// Known crawler User-Agent substrings. Checked server-side so bots never
+// receive the ConsentGate component at all, regardless of client-side state.
+// This is belt-and-suspenders alongside the ConsentGate's own mounted-guard fix.
+function isBot(userAgent: string | null): boolean {
+  if (!userAgent) return false;
+  const ua = userAgent.toLowerCase();
+  return [
+    'claudebot', 'anthropic-ai',       // Anthropic
+    'gptbot', 'chatgpt-user', 'oai-searchbot', // OpenAI
+    'google-extended', 'googlebot', 'googleother', // Google
+    'bingbot', 'bingpreview',           // Microsoft
+    'perplexitybot',                    // Perplexity
+    'youbot',                           // You.com
+    'diffbot',                          // Diffbot
+    'cohere-ai',                        // Cohere
+    'bytespider',                       // ByteDance
+    'applebot',                         // Apple
+    'duckduckbot',                      // DuckDuckGo
+    'slurp',                            // Yahoo
+    'ia_archiver',                      // Internet Archive
+    'facebookbot', 'facebookexternalhit', // Meta
+    'twitterbot', 'linkedinbot',        // Social
+    'semrushbot', 'ahrefsbot',          // SEO tools
+  ].some(bot => ua.includes(bot));
+}
+
+
 // Next.js 15 App Router supports async server components and layouts natively.
 export default async function RootLayout({
   children,
@@ -63,6 +90,10 @@ export default async function RootLayout({
   // if middleware is bypassed). Passing undefined to nonce props is harmless.
   const headersList = await headers();
   const nonce = headersList.get('x-nonce') ?? undefined;
+  // FIX: skip ConsentGate entirely for known crawlers so they receive
+  // clean, unobstructed HTML. The ConsentGate's own mounted-guard handles
+  // all other cases; this is an additional server-side layer.
+  const crawlerRequest = isBot(headersList.get('user-agent'));
 
   return (
     // FIX #2: nonce prop forwarded to ClerkProvider — Clerk v7 uses it to
@@ -92,13 +123,25 @@ export default async function RootLayout({
         </head>
         <body className="font-sans antialiased bg-gray-50 dark:bg-[#050505] text-gray-900 dark:text-[#E0E0E0] min-h-screen flex flex-col selection:bg-indigo-500 dark:selection:bg-orange-500 selection:text-white">
           <SecurityAuditMount />
-          <ConsentGate>
-            <Header />
-            <main className="flex-grow w-full max-w-6xl mx-auto px-6 pb-20">
-              {children}
-            </main>
-            <Footer />
-          </ConsentGate>
+          {/* FIX: bots bypass ConsentGate entirely — they receive the full
+              page content with no modal overlay in the server-rendered HTML. */}
+          {crawlerRequest ? (
+            <>
+              <Header />
+              <main className="flex-grow w-full max-w-6xl mx-auto px-6 pb-20">
+                {children}
+              </main>
+              <Footer />
+            </>
+          ) : (
+            <ConsentGate>
+              <Header />
+              <main className="flex-grow w-full max-w-6xl mx-auto px-6 pb-20">
+                {children}
+              </main>
+              <Footer />
+            </ConsentGate>
+          )}
         </body>
       </html>
     </ClerkProvider>
