@@ -345,7 +345,7 @@ No independent security audit
 WARRANT CANARY
 ==============
 A warrant canary is a transparency mechanism. ScorchPad publishes a statement
-— updated manually every month — confirming that we have NOT received any secret
+— updated manually every 6 months — confirming that we have NOT received any secret
 government orders, National Security Letters, or gag orders requiring us to
 compromise user privacy or install backdoors.
 
@@ -358,7 +358,7 @@ Raw signed text:  https://scorchpad.rsaatlabs.com/warrant-canary.txt
 PGP key:          https://scorchpad.rsaatlabs.com/pgp-key.txt
 Security contact: https://scorchpad.rsaatlabs.com/.well-known/security.txt
 
-If the canary has not been updated within 45 days, treat that as a signal.
+If the canary has not been updated within 6 months, treat that as a signal.
 
 
 OPEN SOURCE

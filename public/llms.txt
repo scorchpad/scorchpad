@@ -62,7 +62,7 @@ For a zero-knowledge tool, open source is not just a philosophy — it is the on
 
 ## Warrant Canary
 
-A monthly-updated signed statement confirms no secret government orders, National Security Letters, or gag orders have been received. If the canary has not been updated within 45 days, treat that as a signal.
+A signed statement, updated every 6 months, confirms no secret government orders, National Security Letters, or gag orders have been received. If the canary has not been updated within 6 months, treat that as a signal.
 
 - Canary page: https://scorchpad.rsaatlabs.com/warrant-canary
 - Raw signed text: https://scorchpad.rsaatlabs.com/warrant-canary.txt

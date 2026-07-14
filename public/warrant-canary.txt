@@ -1,11 +1,8 @@
------BEGIN PGP SIGNED MESSAGE-----
-Hash: SHA512
-
 Warrant Canary — ScorchPad by Rsaat Labs
-Last updated: 2026-05-31
-Next update due: no later than 2026-07-15 (45 days from above date)
+Last updated: 2026-07-14
+Next update due: no later than 2027-01-14 (6 months from above date)
 
-If this canary has not been updated within 45 days of the date above,
+If this canary has not been updated within 6 months of the date above,
 treat its absence as a signal that one or more of the statements below
 may no longer be true.
 
@@ -23,12 +20,4 @@ ScorchPad and Rsaat Labs have never:
 
 This statement is signed with the ScorchPad PGP key.
 Public key: https://scorchpad.rsaatlabs.com/pgp-key.txt
-Key fingerprint: 3784 1A4C 4CEE 81CF D07B  6877 3D7F 05EB 77DF 21B1
------BEGIN PGP SIGNATURE-----
-
-iJcEARYKAD8WIQQ3hBpMTO6Bz9B7aHc9fwXrd98hsQUCahw0jCEcc2VjdXJpdHlA
-c2NvcmNocGFkLnJzYWF0bGFicy5jb20ACgkQPX8F63ffIbHB4gD/T+PhDmErmHle
-GVPT+o7oNWXGcNQNjHBTDHxZ+VxABSkBAMlWi0me79M+EZL+3V1vPWWbw9xoygNy
-m0davPkzAHUE
-=JTCS
------END PGP SIGNATURE-----
+Key fingerprint: 555F430C16454F5413017EEC3A4AE1A1F5434C64

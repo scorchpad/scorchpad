@@ -52,7 +52,7 @@ const REASONS = [
   {
     icon: Flame,
     title: 'We publish a warrant canary',
-    body: "ScorchPad maintains a publicly accessible warrant canary — a signed statement updated monthly confirming we have not received secret government orders to compromise user data. If it ever stops updating, that's the signal. No other mainstream pastebin does this.",
+    body: "ScorchPad maintains a publicly accessible warrant canary — a signed statement updated every 6 months confirming we have not received secret government orders to compromise user data. If it ever stops updating, that's the signal. No other mainstream pastebin does this.",
   },
 ];
 

@@ -296,7 +296,7 @@ const jsonLd = {
     'Nonce-based Content Security Policy (unsafe-inline removed)',
     'Redis TTL auto-deletion — no cleanup cron jobs',
     'Sentry content scrubbing — key material redacted before transmission',
-    'Monthly warrant canary',
+    'Warrant canary, renewed every 6 months',
     'Fully open source — github.com/scorchpad/scorchpad',
   ],
 };
@@ -538,7 +538,7 @@ export default function AboutPage() {
       <section className="mb-12 p-6 border border-gray-200 dark:border-white/10 rounded-xl bg-white dark:bg-[#050505]">
         <h2 className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-widest mb-3">What is a Warrant Canary?</h2>
         <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide mb-3">
-          A warrant canary is a transparency mechanism. ScorchPad publishes a statement — updated manually every month — confirming that we have NOT received any secret government orders, National Security Letters, or gag orders requiring us to compromise user privacy or install backdoors.
+          A warrant canary is a transparency mechanism. ScorchPad publishes a statement — updated manually every 6 months — confirming that we have NOT received any secret government orders, National Security Letters, or gag orders requiring us to compromise user privacy or install backdoors.
         </p>
         <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide mb-3">
           The mechanism works through absence: if the canary page stops being updated, or if the statements change, that signals something has happened that prevents us from speaking openly. It is named after the canary in a coal mine — a warning system that works by dying.
@@ -546,7 +546,7 @@ export default function AboutPage() {
         <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide mb-3">
           View our canary at{' '}
           <a href="/warrant-canary" className="text-indigo-600 dark:text-orange-400 underline hover:opacity-80">/warrant-canary</a>.
-          If it has not been updated within 45 days, treat that as a signal.
+          If it has not been updated within 6 months, treat that as a signal.
         </p>
         <p className="text-[12px] font-mono text-gray-500 dark:text-white/50 leading-relaxed tracking-wide">
           ScorchPad also maintains a responsible disclosure policy and security contact at{' '}

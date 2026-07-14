@@ -5,9 +5,9 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
-// ── IMPORTANT — MANUAL MONTHLY UPDATE REQUIRED ────────────────────────────────
+// ── IMPORTANT — MANUAL UPDATE REQUIRED EVERY 6 MONTHS ─────────────────────────
 //
-// This date MUST be updated by hand every month.
+// This date MUST be updated by hand every 6 months.
 // DO NOT replace with new Date() or any dynamic expression.
 //
 // The canary's entire purpose is that humans can verify this date hasn't
@@ -18,10 +18,10 @@ export const metadata: Metadata = {
 //   2. Sign this file (or its hash) with the PGP key at /public/pgp-key.txt.
 //   3. Commit and push. The commit timestamp is secondary evidence.
 //
-// If this page is NOT updated within 45 days of the date below,
+// If this page is NOT updated within 6 months of the date below,
 // treat that absence as a signal that normal operations have been compromised.
 //
-const LAST_UPDATED = '2026-05-28';
+const LAST_UPDATED = '2026-07-14';
 
 export default function WarrantCanaryPage() {
   return (
@@ -32,9 +32,9 @@ export default function WarrantCanaryPage() {
       <p className="font-mono text-sm text-gray-500 dark:text-white/40 mb-8">
         Last updated:{' '}
         <strong className="text-gray-800 dark:text-white/80">{LAST_UPDATED}</strong>
-        {' '}— updated manually every month.
+        {' '}— updated manually every 6 months.
         <br />
-        If not updated within 45 days of the above date, treat its absence as a signal.
+        If not updated within 6 months of the above date, treat its absence as a signal.
       </p>
 
       <div className="p-6 border border-gray-200 dark:border-white/10 rounded-xl bg-white dark:bg-[#080808] shadow-sm dark:shadow-lg mb-8">
